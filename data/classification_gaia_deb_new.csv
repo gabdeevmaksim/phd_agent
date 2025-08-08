@@ -1,0 +1,53 @@
+name,gaia,binary_tess_res,spot_tess_res,binary_tess_vit,spot_tess_vit,binary_gaia_res,spot_gaia_res,binary_gaia_vit,spot_gaia_vit,real_spot,lit_spot
+   AH_Cep,2211503747619173376,det,s,det,s,det,s,det,s,n,n,2005ASPC..335..321P
+   AI_Hya,3077483709857255808,det,s,det,s,det,n,det,n,s,n,2023MNRAS.520.1601K
+   AR_Aur,181983575426242944,det,s,det,s,det,n,det,s,n,n,1998A&AS..128..245A
+   BG_Ind,6410494364389396992,det,s,det,s,det,n,det,n,s,
+   CC_Cas,462130376453494272,det,n,det,n,det,n,det,n,n
+   CV_Vel,5323799125200766592,det,s,det,s,det,n,det,n,s
+   CW_Cep,2207689919743551360,det,n,det,n,det,n,det,n,n
+   CW_Eri,5152756553745197952,det,n,det,n,det,n,det,n,n
+   DI_Her,4534148428383399424,det,n,det,n,det,n,det,n,n
+   EE_Peg,1741318868675197184,det,n,det,n,det,n,det,n,n
+   EI_Cep,2283626831313777536,det,n,det,n,det,n,det,n,n
+   FL_Lyr,2130371574879626112,det,n,det,n,det,n,det,n,n
+   GZ_CMa,2934917596236264704,det,s,det,s,det,s,det,s,s
+ HD_60637,3041557579742275968,det,n,det,n,det,n,det,n,n
+ HD_69735,663653059476188416,det,n,det,n,det,n,det,n,n
+ HD_96609,5340149241088915712,det,n,det,n,det,s,det,s,n
+ HD_97329,5350012341389819776,det,n,det,n,det,n,det,n,n
+   HO_Tel,6671501451113955072,det,s,det,s,det,s,det,s,s
+   HY_Vir,3684484600212307712,det,s,det,s,det,s,det,s,s
+   IO_Aqr,4231287675625475840,det,n,det,n,det,n,det,n,n
+   IQ_Per,246797724301643904,det,n,det,n,det,n,det,n,s
+   MY_Cyg,2054756957652357888,det,s,det,s,det,s,det,s,n
+   OT_And,1924490187240994816,det,n,det,n,det,n,det,n,n
+   PT_Vel,5427171390199613184,det,s,det,s,det,n,det,n,s
+   RZ_Cha,5198334162577657984,det,s,det,s,det,n,det,n,n
+   TZ_Men,4614607631277672448,det,n,det,n,det,n,det,n,n
+V1034_Sco,5966509095207261056,det,n,det,n,det,n,det,n,n
+V1061_Cyg,2169527108088349952,det,n,det,n,det,n,det,n,s
+V1130_Tau,3270203565354460032,det,s,det,s,det,s,det,s,s
+V1292_Sco,5966503597648760064,det,s,det,s,det,n,det,n,s
+V1388_Ori,3342421035256268544,det,s,det,s,det,n,det,s,s
+V1647_Sgr,4037354234303734528,det,n,det,n,det,s,det,s,s
+ V335_Ser,4410103003998422656,det,n,det,n,det,n,det,n,n
+ V338_Vir,3622736022900584704,det,n,det,n,det,n,det,n,n
+ V362_Pav,6439367711536089728,det,n,det,n,det,s,det,s,n
+ V364_Lac,1928855351478724736,det,s,det,s,det,n,det,n,n
+ V396_Cas,2009263805058016256,det,n,det,n,det,s,det,s,n
+ V402_Lac,1962614756503942144,det,n,det,n,det,n,det,n,n
+ V432_Aur,189291376380052992,det,n,det,n,det,n,det,n,n
+ V432_Aur,2059095424401407232,det,n,det,n,det,n,det,n,n
+ V478_Cyg,2061089113838868480,det,s,det,s,det,s,det,s,s
+ V505_Per,455772347387763840,det,n,det,n,det,n,det,n,n
+ V539_Ara,5921022161722960512,det,s,det,s,det,n,det,n,s
+ V572_Per,442831198606351104,det,n,det,n,det,n,det,n,n
+ V596_Pup,5706279565053294848,det,n,det,n,det,n,det,n,n
+   VV_Ori,3217626018825418752,det,n,det,n,det,s,det,s,n
+   WX_Cep,2205311401215067904,det,n,det,n,det,n,det,n,n
+   XY_Cet,2015099871749760,det,n,det,n,det,n,det,n,n
+   YZ_Cas,539047365205648128,det,n,det,n,det,n,det,n,n
+    Y_Cyg,1869256701670871168,det,s,det,s,det,s,det,n,s
+ chi2_Hya,3532312225289255040,det,s,det,s,det,n,det,s,s
+delta_Cir,5875491419647525248,det,n,det,n,det,s,det,s,n
