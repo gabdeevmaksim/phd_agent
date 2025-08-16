@@ -1,0 +1,35 @@
+{
+  "search_strategies": {
+    "15 keywords": {
+      "total_bibcodes": 3402,
+      "sample_bibcodes": [
+        "2025NewA..12102445Y",
+        "2025NewA..11902392H",
+        "2025NewA..11902418Z",
+        "2025RAA....25i5018W",
+        "2025RAA....25h5002B",
+        "2025NewA..11802374N",
+        "2025AJ....170..101G",
+        "2025A&A...700A..29C",
+        "2025AJ....170..126S",
+        "2025arXiv250713515S"
+      ]
+    },
+    "4 keywords": {
+      "total_bibcodes": 9425,
+      "sample_bibcodes": [
+        "2025NewA..12102445Y",
+        "2025AcAau.235..251G",
+        "2025NewA..11902392H",
+        "2025NewA..11902418Z",
+        "2025NewA..11902406W",
+        "2025ChEnJ.51964904G",
+        "2025RAA....25i5018W",
+        "2025arXiv250800369J",
+        "2025RAA....25h5002B",
+        "2025NewA..11802374N"
+      ]
+    }
+  },
+  "wumacat_baseline": 424
+}

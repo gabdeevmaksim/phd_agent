@@ -491,3 +491,326 @@ def download_catalogue_abstracts(csv_file_path, output_json_path, batch_size=50)
     except Exception as e:
         print(f"❌ Error saving final results: {e}")
         return None
+
+def search_papers_by_keywords(keywords, search_fields="full", max_results=50):
+    """
+    Search for papers containing keywords in specified fields.
+    
+    Args:
+        keywords (list): List of keywords to search for
+        search_fields (str): "title", "abs", "full", or "title,abs"
+        max_results (int): Maximum number of results to return
+        
+    Returns:
+        dict: API response with matching papers
+    """
+    if not ADS_API_TOKEN:
+        print("❌ Error: ADS_API_TOKEN not found in environment variables")
+        return None
+    
+    headers = {"Authorization": f"Bearer {ADS_API_TOKEN}"}
+    
+    # Build query based on search fields
+    if search_fields == "title":
+        query_parts = [f"title:{keyword}" for keyword in keywords]
+    elif search_fields == "abs":
+        query_parts = [f"abs:{keyword}" for keyword in keywords]
+    elif search_fields == "full":
+        query_parts = [f"full:{keyword}" for keyword in keywords]
+    elif search_fields == "title,abs":
+        # Search in both title and abstract
+        title_parts = [f"title:{keyword}" for keyword in keywords]
+        abs_parts = [f"abs:{keyword}" for keyword in keywords]
+        query_parts = title_parts + abs_parts
+    else:
+        print(f"❌ Invalid search_fields: {search_fields}")
+        return None
+    
+    # Join keywords with OR operator
+    query = " AND ".join(query_parts)
+    
+    params = {
+        "q": query,
+        "fl": "bibcode,title,abstract,author,year,pub",
+        "rows": max_results,
+        "sort": "date desc"  # Sort by date, newest first
+    }
+    
+    try:
+        print(f"🔍 Searching for: {query}")
+        response = requests.get(
+            f"{ADS_API_BASE_URL}/search/query",
+            headers=headers,
+            params=params,
+            timeout=30
+        )
+        
+        if response.status_code == 200:
+            data = response.json()
+            num_found = data.get("response", {}).get("numFound", 0)
+            docs = data.get("response", {}).get("docs", [])
+            
+            print(f"✅ Found {num_found} papers, retrieved {len(docs)}")
+            return data
+        else:
+            print(f"❌ API request failed with status {response.status_code}")
+            return None
+            
+    except requests.exceptions.RequestException as e:
+        print(f"❌ Request failed: {e}")
+        return None
+
+
+def process_search_results(results):
+    """
+    Process and display search results.
+    
+    Args:
+        results (dict): API response from search_papers_by_keywords
+        
+    Returns:
+        list: List of processed paper information
+    """
+    if not results or "response" not in results:
+        print("❌ No results to process")
+        return []
+    
+    docs = results["response"]["docs"]
+    processed_papers = []
+    
+    print(f"\n📊 Processing {len(docs)} papers:")
+    print("=" * 80)
+    
+    for i, paper in enumerate(docs, 1):
+        title = paper.get("title", ["N/A"])[0] if paper.get("title") else "N/A"
+        authors = ", ".join(paper.get("author", ["N/A"])) if paper.get("author") else "N/A"
+        year = paper.get("year", "N/A")
+        abstract = paper.get("abstract", "No abstract available")
+        bibcode = paper.get("bibcode", "N/A")
+        journal = paper.get("pub", "N/A")
+        
+        # Store processed paper info
+        processed_paper = {
+            "bibcode": bibcode,
+            "title": title,
+            "authors": authors,
+            "year": year,
+            "journal": journal,
+            "abstract": abstract
+        }
+        processed_papers.append(processed_paper)
+        
+        # Display paper info
+        print(f"\n{i}. {title}")
+        print(f"   Authors: {authors}")
+        print(f"   Year: {year} | Journal: {journal}")
+        print(f"   Bibcode: {bibcode}")
+        print(f"   Abstract: {abstract[:200]}{'...' if len(abstract) > 200 else ''}")
+        print("-" * 80)
+    
+    return processed_papers
+
+
+def search_and_process_papers(keywords, search_fields="full", max_results=50):
+    """
+    Combined function to search for papers and process the results.
+    
+    Args:
+        keywords (list): List of keywords to search for
+        search_fields (str): "title", "abs", "full", or "title,abs"
+        max_results (int): Maximum number of results to return
+        
+    Returns:
+        list: List of processed paper information
+    """
+    print(f"🚀 Starting search for keywords: {keywords}")
+    print(f"📂 Search fields: {search_fields}")
+    print(f"📊 Max results: {max_results}")
+    
+    # Search for papers
+    results = search_papers_by_keywords(keywords, search_fields, max_results)
+    
+    if results:
+        # Process and display results
+        processed_papers = process_search_results(results)
+        return processed_papers
+    else:
+        print("❌ No results found or search failed")
+        return []
+
+
+def count_publications_for_keywords(keywords, search_fields="full", description="", silent=False):
+    """
+    Count how many publications match the given keywords without retrieving the full data.
+    
+    Args:
+        keywords (list): List of keywords to search for
+        search_fields (str): "title", "abs", "full", or "title,abs"
+        description (str): Description for logging
+        silent (bool): If True, suppress output messages
+    
+    Returns:
+        int: Total number of publications found
+    """
+    if not silent:
+        print(f"\n🔍 Counting publications for {description}...")
+        print(f"Keywords: {keywords}")
+        print(f"Search fields: {search_fields}")
+    
+    # Use max_results=1 to minimize data transfer while getting the count
+    results = search_papers_by_keywords(keywords, search_fields=search_fields, max_results=1)
+    
+    if results and "response" in results:
+        total_count = results["response"].get("numFound", 0)
+        if not silent:
+            print(f"📊 Total publications found: {total_count:,}")
+        return total_count
+    else:
+        if not silent:
+            print("❌ Failed to get publication count")
+        return 0
+
+
+def search_all_bibcodes(keywords, search_fields="full", silent=False):
+    """
+    Search for papers and return ALL bibcodes using pagination.
+    Handles the 2000 per request limit automatically.
+    
+    Args:
+        keywords (list): List of keywords to search for
+        search_fields (str): "title", "abs", "full", or "title,abs"
+        silent (bool): If True, suppress output messages
+    
+    Returns:
+        list: List of all bibcodes found
+    """
+    if not ADS_API_TOKEN:
+        if not silent:
+            print("❌ Error: ADS_API_TOKEN not found in environment variables")
+        return []
+    
+    headers = {"Authorization": f"Bearer {ADS_API_TOKEN}"}
+    
+    # Build query based on search fields
+    if search_fields == "title":
+        query_parts = [f"title:{keyword}" for keyword in keywords]
+    elif search_fields == "abs":
+        query_parts = [f"abs:{keyword}" for keyword in keywords]
+    elif search_fields == "full":
+        query_parts = [f"full:{keyword}" for keyword in keywords]
+    elif search_fields == "title,abs":
+        title_parts = [f"title:{keyword}" for keyword in keywords]
+        abs_parts = [f"abs:{keyword}" for keyword in keywords]
+        query_parts = title_parts + abs_parts
+    else:
+        if not silent:
+            print(f"❌ Invalid search_fields: {search_fields}")
+        return []
+    
+    # Join keywords with AND operator
+    query = " AND ".join(query_parts)
+    
+    # First request to get total count
+    initial_params = {
+        "q": query,
+        "fl": "bibcode",
+        "rows": 1,  # Just get count first
+        "sort": "date desc"
+    }
+    
+    try:
+        if not silent:
+            print(f"🔍 Searching for bibcodes with query: {query}")
+            print(f"📊 Getting total count first...")
+        
+        response = requests.get(
+            f"{ADS_API_BASE_URL}/search/query",
+            headers=headers,
+            params=initial_params,
+            timeout=30
+        )
+        
+        if response.status_code != 200:
+            if not silent:
+                print(f"❌ Initial request failed with status {response.status_code}")
+            return []
+        
+        data = response.json()
+        total_found = data.get("response", {}).get("numFound", 0)
+        
+        if total_found == 0:
+            if not silent:
+                print("❌ No papers found for this query")
+            return []
+        
+        if not silent:
+            print(f"✅ Found {total_found:,} total papers")
+        
+        # Calculate pagination
+        max_per_request = 2000
+        requests_needed = (total_found + max_per_request - 1) // max_per_request
+        
+        if not silent:
+            print(f"📄 Will need {requests_needed} requests to get all bibcodes")
+        
+        all_bibcodes = []
+        
+        # Get all bibcodes with pagination
+        for i in range(requests_needed):
+            start = i * max_per_request
+            remaining = total_found - start
+            rows = min(max_per_request, remaining)
+            
+            if not silent:
+                print(f"📥 Request {i+1}/{requests_needed}: Getting bibcodes {start+1:,}-{start+rows:,}")
+            
+            params = {
+                "q": query,
+                "fl": "bibcode",
+                "rows": rows,
+                "start": start,
+                "sort": "date desc"
+            }
+            
+            response = requests.get(
+                f"{ADS_API_BASE_URL}/search/query",
+                headers=headers,
+                params=params,
+                timeout=30
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                docs = data.get("response", {}).get("docs", [])
+                batch_bibcodes = [doc.get("bibcode") for doc in docs if doc.get("bibcode")]
+                all_bibcodes.extend(batch_bibcodes)
+                
+                if not silent:
+                    print(f"   ✅ Retrieved {len(batch_bibcodes)} bibcodes")
+                    
+                    # Check rate limit
+                    if 'X-RateLimit-Remaining' in response.headers:
+                        remaining_requests = response.headers['X-RateLimit-Remaining']
+                        print(f"   🔄 API requests remaining: {remaining_requests}")
+                
+                # Small delay between requests to be nice to the API
+                if i < requests_needed - 1:  # Don't delay after last request
+                    time.sleep(0.5)
+                    
+            else:
+                if not silent:
+                    print(f"   ❌ Request {i+1} failed with status {response.status_code}")
+                break
+        
+        if not silent:
+            print(f"\n🎯 FINAL RESULTS:")
+            print(f"   Total papers found: {total_found:,}")
+            print(f"   Total bibcodes retrieved: {len(all_bibcodes):,}")
+            print(f"   API requests used: {min(i+1, requests_needed)}")
+        
+        return all_bibcodes
+        
+    except requests.exceptions.RequestException as e:
+        if not silent:
+            print(f"❌ Request failed: {e}")
+        return []

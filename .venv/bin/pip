@@ -1,4 +1,4 @@
-#!/Users/wera/Max_astro/GitProjects/ads_nasa_parser/.venv/bin/python3
+#!/Users/wera/Max_astro/GitProjects/phd_agent/.venv/bin/python3.13
 # -*- coding: utf-8 -*-
 import re
 import sys

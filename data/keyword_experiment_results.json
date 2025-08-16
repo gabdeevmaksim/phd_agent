@@ -1,0 +1,163 @@
+{
+  "metadata": {
+    "experiment_date": "2025-08-14T17:56:02.411944",
+    "search_field": "full",
+    "wumacat_baseline": 424,
+    "keyword_counts_tested": [
+      2,
+      3,
+      4,
+      5,
+      10
+    ],
+    "total_api_requests_estimated": 55
+  },
+  "results": {
+    "2": {
+      "keywords": [
+        "light",
+        "binary",
+        "period",
+        "photometric"
+      ],
+      "total_papers": 67312,
+      "overlap_count": 372,
+      "overlap_percentage": 0.5526503446636558,
+      "coverage_percentage": 87.73584905660378,
+      "new_discoveries": 66940,
+      "missed_wumacat": 52,
+      "sample_bibcodes": [
+        "2025NewA..12102445Y",
+        "2025NewA..12102436F",
+        "2025SoSyR..59...59D",
+        "2025CNSNS.15109104F",
+        "2025A&ARv..33....1R",
+        "2025JCIS..69737967C",
+        "2025NewA..12002421C",
+        "2025Icar..44116675L",
+        "2025Icar..44116669H",
+        "2025AtmRe.32608290K"
+      ]
+    },
+    "3": {
+      "keywords": [
+        "photometric",
+        "light",
+        "contact",
+        "binary",
+        "period"
+      ],
+      "total_papers": 12660,
+      "overlap_count": 371,
+      "overlap_percentage": 2.9304897314375986,
+      "coverage_percentage": 87.5,
+      "new_discoveries": 12289,
+      "missed_wumacat": 53,
+      "sample_bibcodes": [
+        "2025NewA..12102445Y",
+        "2025AcAau.235..251G",
+        "2025OptLE.19309098S",
+        "2025NewA..11902392H",
+        "2025NewA..11902418Z",
+        "2025NewA..11902406W",
+        "2025BiTec.43132623X",
+        "2025ChEnJ.51964904G",
+        "2025CCST...1600421S",
+        "2025RAA....25i5018W"
+      ]
+    },
+    "4": {
+      "keywords": [
+        "photometric",
+        "light",
+        "eclipsing",
+        "contact",
+        "binary",
+        "period"
+      ],
+      "total_papers": 9425,
+      "overlap_count": 366,
+      "overlap_percentage": 3.8832891246684347,
+      "coverage_percentage": 86.32075471698113,
+      "new_discoveries": 9059,
+      "missed_wumacat": 58,
+      "sample_bibcodes": [
+        "2025NewA..12102445Y",
+        "2025AcAau.235..251G",
+        "2025NewA..11902392H",
+        "2025NewA..11902418Z",
+        "2025NewA..11902406W",
+        "2025ChEnJ.51964904G",
+        "2025RAA....25i5018W",
+        "2025arXiv250800369J",
+        "2025RAA....25h5002B",
+        "2025NewA..11802374N"
+      ]
+    },
+    "5": {
+      "keywords": [
+        "mass",
+        "photometric",
+        "light",
+        "period",
+        "eclipsing",
+        "contact",
+        "binary",
+        "uma"
+      ],
+      "total_papers": 3402,
+      "overlap_count": 316,
+      "overlap_percentage": 9.288653733098178,
+      "coverage_percentage": 74.52830188679245,
+      "new_discoveries": 3086,
+      "missed_wumacat": 108,
+      "sample_bibcodes": [
+        "2025NewA..12102445Y",
+        "2025NewA..11902392H",
+        "2025NewA..11902418Z",
+        "2025RAA....25i5018W",
+        "2025RAA....25h5002B",
+        "2025NewA..11802374N",
+        "2025AJ....170..101G",
+        "2025A&A...700A..29C",
+        "2025AJ....170..126S",
+        "2025arXiv250713515S"
+      ]
+    },
+    "10": {
+      "keywords": [
+        "mass",
+        "orbital",
+        "photometric",
+        "period",
+        "light",
+        "type",
+        "eclipsing",
+        "contact",
+        "system",
+        "binary",
+        "binaries",
+        "curves",
+        "uma"
+      ],
+      "total_papers": 3066,
+      "overlap_count": 301,
+      "overlap_percentage": 9.817351598173515,
+      "coverage_percentage": 70.99056603773585,
+      "new_discoveries": 2765,
+      "missed_wumacat": 123,
+      "sample_bibcodes": [
+        "2025NewA..12102445Y",
+        "2025NewA..11902392H",
+        "2025NewA..11902418Z",
+        "2025RAA....25i5018W",
+        "2025RAA....25h5002B",
+        "2025NewA..11802374N",
+        "2025AJ....170..101G",
+        "2025A&A...700A..29C",
+        "2025arXiv250713515S",
+        "2025ApJ...988...85X"
+      ]
+    }
+  }
+}
