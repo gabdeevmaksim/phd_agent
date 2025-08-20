@@ -133,6 +133,22 @@ The project includes several Jupyter notebooks for interactive research and anal
   - Comparative word cloud generation
   - Trend analysis in research terminology
 
+### 5. Exact Keyword Experiment (`notebooks/exact_keyword_experiment.ipynb`)
+- **Purpose**: Precise keyword matching and exact phrase analysis
+- **Features**:
+  - Exact keyword matching without stemming or variations
+  - Phrase-based search optimization
+  - Precision-focused literature discovery
+  - Comparison with fuzzy matching approaches
+
+### 6. Similarity Experiments (`notebooks/similarity_experiments.ipynb`)
+- **Purpose**: Advanced similarity analysis and clustering of research papers
+- **Features**:
+  - Text similarity calculations between papers
+  - Clustering analysis of research themes
+  - Semantic similarity metrics
+  - Research trend identification through similarity networks
+
 ### Running Notebooks
 To start the Jupyter environment:
 ```bash
@@ -160,6 +176,8 @@ python -m src.ads_parser
 - **Search Strategy Optimization**: Comparative analysis of different search approaches with performance metrics
 - **Literature Coverage Analysis**: Statistical evaluation of keyword effectiveness and overlap detection
 - **Bibliometric Research**: Comprehensive analysis of research trends and patterns
+- **Similarity Analysis**: Advanced clustering and similarity metrics for research paper analysis
+- **Exact Matching**: Precision-focused keyword matching for specialized research queries
 
 ### Text Mining & Visualization
 - **Word Cloud Generation**: Advanced text preprocessing and visualization with customizable styling
@@ -215,6 +233,9 @@ The notebooks contain specialized functions for:
 - **classification_gaia_deb_new.csv**: Gaia-based classification data for detached eclipsing binary stars
 - **wumacat_abstracts.json**: Complete abstracts and metadata for the entire WUMaCat catalogue (downloaded via ADS API)
 
+### Extended Research Data
+- **comprehensive_keyword_experiment_results.json**: Extended keyword discovery experiments with detailed analysis results
+
 ### Experiment Results
 - **keyword_experiment_results.json**: Comprehensive results from systematic keyword discovery experiments
 - **keyword_experiment_results.png**: Visualization showing keyword effectiveness and coverage analysis
@@ -254,6 +275,8 @@ python -m unittest discover -s tests
 - `notebooks/keyword_experiment.ipynb` - Systematic keyword discovery and literature coverage experiments
 - `notebooks/test_ads_parser.ipynb` - Interactive testing and development notebook for API functions
 - `notebooks/wordcloud_analysis.ipynb` - Word cloud generation and text mining analysis
+- `notebooks/exact_keyword_experiment.ipynb` - Precise keyword matching and exact phrase analysis
+- `notebooks/similarity_experiments.ipynb` - Advanced similarity analysis and clustering of research papers
 
 ### Data Directory
 - `data/WUMaCat.csv` - W UMa contact binary star catalogue (688 systems, 424 unique bibcodes)
@@ -264,6 +287,7 @@ python -m unittest discover -s tests
 - `data/keyword_experiment_summary.csv` - Summary statistics of keyword coverage analysis
 - `data/search_strategy_summary.json` - Optimized search strategies and performance metrics
 - `data/bibcode_comparison.json` - Comparative analysis of bibcode overlaps across search strategies
+- `data/comprehensive_keyword_experiment_results.json` - Comprehensive results from extended keyword experiments
 
 ### Generated Outputs
 - `wordclouds/` - Directory containing word cloud visualizations and frequency analysis

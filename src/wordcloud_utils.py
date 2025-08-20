@@ -8,19 +8,22 @@ import matplotlib.pyplot as plt
 from wordcloud import WordCloud
 from collections import Counter
 import os
+from typing import Dict, List, Optional, Set, Tuple, Union
+from datetime import datetime
 
 
-def extract_top_words_from_json_files(titles_file, abstracts_file, n_words):
+def extract_top_words_from_json_files(titles_file: str, abstracts_file: str, 
+                                     n_words: int) -> List[str]:
     """
     Extract top N words from both JSON files and return a comprehensive list without duplicates.
     
     Args:
-        titles_file (str): Path to titles word frequencies JSON file
-        abstracts_file (str): Path to abstracts word frequencies JSON file
-        n_words (int): Number of top words to extract from each file
+        titles_file: Path to titles word frequencies JSON file
+        abstracts_file: Path to abstracts word frequencies JSON file
+        n_words: Number of top words to extract from each file
         
     Returns:
-        list: Comprehensive list of unique words
+        Comprehensive list of unique words
     """
     # Load titles data
     with open(titles_file, 'r') as f:
@@ -47,20 +50,136 @@ def extract_top_words_from_json_files(titles_file, abstracts_file, n_words):
     return all_words
 
 
-def load_data(json_file_path):
+def load_wumacat_bibcodes(csv_path: str = "data/WUMaCat.csv") -> Set[str]:
+    """
+    Load WUMaCat bibcodes from CSV file.
+    
+    Args:
+        csv_path: Path to WUMaCat CSV file
+        
+    Returns:
+        Set of unique bibcodes
+    """
+    import csv
+    
+    bibcodes = set()
+    try:
+        with open(csv_path, 'r', encoding='utf-8') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                if 'Bibcode' in row and row['Bibcode'].strip():
+                    bibcodes.add(row['Bibcode'].strip())
+        
+        print(f"✅ Loaded {len(bibcodes)} unique bibcodes from WUMaCat")
+        return bibcodes
+        
+    except FileNotFoundError:
+        print(f"❌ WUMaCat file not found: {csv_path}")
+        return set()
+    except Exception as e:
+        print(f"❌ Error loading WUMaCat bibcodes: {e}")
+        return set()
+
+
+def get_top_keywords_from_wordclouds(titles_freq_file: str, abstracts_freq_file: str, 
+                                   top_n: int = 20, exclude_generic: bool = True) -> List[str]:
+    """
+    Extract top keywords from wordcloud frequency files, excluding generic terms.
+    
+    Args:
+        titles_freq_file: Path to titles frequency JSON file
+        abstracts_freq_file: Path to abstracts frequency JSON file  
+        top_n: Number of top keywords to extract
+        exclude_generic: Whether to exclude generic research terms
+        
+    Returns:
+        List of top keywords suitable for exact searching
+    """
+    try:
+        # Load frequency data
+        with open(titles_freq_file, 'r') as f:
+            titles_data = json.load(f)
+        with open(abstracts_freq_file, 'r') as f:
+            abstracts_data = json.load(f)
+        
+        # Combine frequencies from both sources
+        combined_freq = {}
+        
+        for word, freq in titles_data.get("word_frequencies", {}).items():
+            combined_freq[word] = combined_freq.get(word, 0) + freq * 2  # Weight titles higher
+            
+        for word, freq in abstracts_data.get("word_frequencies", {}).items():
+            combined_freq[word] = combined_freq.get(word, 0) + freq
+        
+        # Generic terms to exclude from exact searching
+        generic_terms = {
+            'system', 'systems', 'object', 'objects', 'source', 'sources', 'method', 'methods',
+            'observation', 'observations', 'measurement', 'measurements', 'detection', 'detections',
+            'model', 'models', 'simulation', 'simulations', 'technique', 'techniques', 'approach',
+            'approaches', 'investigation', 'investigations', 'research', 'work', 'survey', 'surveys',
+            'catalog', 'catalogue', 'database', 'sample', 'samples', 'population', 'populations',
+            'distribution', 'distributions', 'properties', 'characteristics', 'parameters',
+            'values', 'data', 'dataset', 'datasets', 'analysis', 'analyses', 'statistics'
+        } if exclude_generic else set()
+        
+        # Sort by frequency and filter
+        sorted_words = sorted(combined_freq.items(), key=lambda x: x[1], reverse=True)
+        
+        # Extract top keywords, excluding generic terms
+        keywords = []
+        for word, freq in sorted_words:
+            if len(keywords) >= top_n:
+                break
+            if word not in generic_terms and len(word) > 3:  # Exclude very short words
+                keywords.append(word)
+        
+        print(f"✅ Extracted top {len(keywords)} keywords for exact searching")
+        return keywords
+        
+    except Exception as e:
+        print(f"❌ Error extracting keywords: {e}")
+        return []
+
+
+def save_experiment_results(results: Dict, output_file: str) -> None:
+    """
+    Save experiment results to JSON file with metadata.
+    
+    Args:
+        results: Experiment results dictionary
+        output_file: Path to save results
+    """
+    try:
+        # Add metadata
+        results_with_metadata = {
+            "experiment_type": "exact_keyword_search",
+            "timestamp": datetime.now().isoformat(),
+            "metadata": {
+                "description": "Exact keyword search experiment comparing different ADS fields",
+                "search_method": "exact field matching using =field:\"keyword\" syntax"
+            },
+            "results": results
+        }
+        
+        with open(output_file, 'w', encoding='utf-8') as f:
+            json.dump(results_with_metadata, f, indent=2, ensure_ascii=False)
+        
+        print(f"✅ Experiment results saved to: {output_file}")
+        
+    except Exception as e:
+        print(f"❌ Error saving results: {e}")
+
+
+def load_data(json_file_path: str) -> Dict:
     """Load the JSON data from the file."""
     with open(json_file_path, 'r', encoding='utf-8') as file:
         data = json.load(file)
         return data.get('papers', {})
 
 
-def clean_text(text):
-    """Clean and preprocess text for word cloud generation."""
-    if not text:
-        return ""
-    
-    # Common stop words for astronomical literature
-    stop_words = {
+def get_default_stopwords() -> Set[str]:
+    """Get default stopwords for astronomical literature."""
+    return {
         'the', 'and', 'of', 'in', 'to', 'a', 'is', 'are', 'for', 'with', 'by', 'on', 'as', 
         'at', 'be', 'or', 'an', 'we', 'it', 'that', 'from', 'this', 'these', 'have', 'has',
         'was', 'were', 'been', 'their', 'they', 'them', 'than', 'more', 'can', 'will', 'would',
@@ -76,18 +195,44 @@ def clean_text(text):
         'indicate', 'indicates', 'determine', 'determined', 'calculate', 'calculated',
         'measure', 'measured', 'estimate', 'estimated', 'derive', 'derived', 'find', 'finds'
     }
+
+def clean_text(text: str, custom_stopwords: Optional[Set[str]] = None, 
+               min_word_length: int = 3, remove_numbers: bool = True,
+               remove_latex: bool = True) -> str:
+    """
+    Clean and preprocess text for word cloud generation.
     
-    # Remove HTML tags and special characters
+    Args:
+        text: Input text to clean
+        custom_stopwords: Custom set of stopwords (uses default if None)
+        min_word_length: Minimum word length to keep
+        remove_numbers: Whether to remove numerical content
+        remove_latex: Whether to remove LaTeX markup
+        
+    Returns:
+        Cleaned text string
+    """
+    if not text:
+        return ""
+    
+    stopwords = custom_stopwords if custom_stopwords is not None else get_default_stopwords()
+    
+    # Remove HTML tags
     text = re.sub(r'<[^>]+>', '', text)
-    text = re.sub(r'{[^}]*}', '', text)  # Remove LaTeX-style markup
-    text = re.sub(r'\\[a-zA-Z]+', '', text)  # Remove LaTeX commands
     
-    # Convert to lowercase and remove punctuation, keeping only letters and spaces
-    text = re.sub(r'[^a-zA-Z\s]', ' ', text.lower())
+    if remove_latex:
+        text = re.sub(r'{[^}]*}', '', text)  # Remove LaTeX-style markup
+        text = re.sub(r'\\[a-zA-Z]+', '', text)  # Remove LaTeX commands
     
-    # Split into words and filter out stop words and short words
+    # Convert to lowercase and remove punctuation
+    if remove_numbers:
+        text = re.sub(r'[^a-zA-Z\s]', ' ', text.lower())
+    else:
+        text = re.sub(r'[^\w\s]', ' ', text.lower())
+    
+    # Split into words and filter
     words = [word.strip() for word in text.split() 
-            if len(word.strip()) > 2 and word.strip() not in stop_words]
+            if len(word.strip()) >= min_word_length and word.strip() not in stopwords]
     
     return ' '.join(words)
 

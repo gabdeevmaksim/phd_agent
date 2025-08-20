@@ -1,38 +1,73 @@
+# Python
 __pycache__/
-*.pyc
-*.pyo
-*.log
-pdfs/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
 
+# Virtual environments
 .env
 *.env
-.DS_Store
+.venv/
+venv/
+ENV/
+env/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*/.ipynb_checkpoints/*
+
+# IDEs and editors
 .vscode/
 .idea/
 *.swp
 *.swo
 *.bak
 *.tmp
-node_modules/
-dist/
-build/
-coverage/
 *.iml
 *.class
 *.jar
 *.war
 *.ear
+*.sublime-workspace
+*.sublime-project
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Logs and databases
+*.log
+*.log.*
 *.sqlite3
 *.db
 *.lock
 *.pid
 *.seed
 *.seed.*
-*.orig
-*.rej
-*.sublime-workspace
-*.sublime-project
-*.log.*
+
+# Archives and compressed files
 *.gz
 *.zip
 *.tar
@@ -41,4 +76,26 @@ coverage/
 *.rar
 *.bak.*
 *.tmp.*
-.venv/
+
+# Node.js (if any frontend components)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Coverage reports
+coverage/
+.coverage
+htmlcov/
+
+# Large data files (optional - uncomment if you don't want to track large data)
+# data/*.json
+# data/*.csv
+# wordclouds/*.png
+# wordclouds/*.json
+
+# Temporary files
+*.tmp
+*.temp
+
+.cursor/
