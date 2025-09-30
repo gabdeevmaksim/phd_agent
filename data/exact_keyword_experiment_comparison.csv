@@ -1,0 +1,11 @@
+Search_Field,Keywords_Count,Keywords,Total_Papers,WUMaCat_Overlaps,Precision_%,Recall_%,F1_Score_%,Efficiency,Keywords_List
+Abstract,5,"binary, light, contact...",669,158,23.61733931240658,37.264150943396224,28.911253430924063,4.234177215189874,"['binary', 'light', 'contact', 'period', 'photometric']"
+Abstract,4,"binary, light, contact...",1152,196,17.01388888888889,46.22641509433962,24.873096446700504,5.877551020408164,"['binary', 'light', 'contact', 'period']"
+Abstract,3,"binary, light, contact",2040,264,12.941176470588237,62.264150943396224,21.42857142857143,7.7272727272727275,"['binary', 'light', 'contact']"
+Abstract,2,"binary, light",28638,322,1.6099999999999999,75.94339622641509,3.153153153153153,88.93788819875776,"['binary', 'light']"
+Abstract,10,"binary, light, contact...",158,56,35.44303797468354,13.20754716981132,19.243986254295532,2.8214285714285716,"['binary', 'light', 'contact', 'period', 'photometric', 'mass', 'type', 'curves', 'binaries', 'eclipsing']"
+Full-text,7,"binary, light, contact...",7448,340,4.564983888292159,80.18867924528303,8.63821138211382,21.905882352941177,"['binary', 'light', 'contact', 'period', 'photometric', 'mass', 'type']"
+Full-text,5,"binary, light, contact...",9020,352,3.902439024390244,83.01886792452831,7.454468445573909,25.625,"['binary', 'light', 'contact', 'period', 'photometric']"
+Full-text,20,"binary, light, contact...",930,198,21.29032258064516,46.69811320754717,29.246676514032494,4.696969696969697,"['binary', 'light', 'contact', 'period', 'photometric', 'mass', 'type', 'curves', 'binaries', 'eclipsing', 'orbital', 'ratio', 'curve', 'component', 'star', 'components', 'massive', 'solutions', 'wilson', 'devinney']"
+Full-text,15,"binary, light, contact...",3235,288,8.902627511591962,67.9245283018868,15.742006012571741,11.23263888888889,"['binary', 'light', 'contact', 'period', 'photometric', 'mass', 'type', 'curves', 'binaries', 'eclipsing', 'orbital', 'ratio', 'curve', 'component', 'star']"
+Full-text,10,"binary, light, contact...",4417,314,7.1088974417025135,74.05660377358491,12.97252633753357,14.066878980891719,"['binary', 'light', 'contact', 'period', 'photometric', 'mass', 'type', 'curves', 'binaries', 'eclipsing']"

@@ -1,11 +1,117 @@
 {
-  "experiment_type": "exact_keyword_search",
-  "timestamp": "2025-08-29T16:31:22.405204",
-  "metadata": {
-    "description": "Exact keyword search experiment comparing different ADS fields",
-    "search_method": "exact field matching using =field:\"keyword\" syntax"
+  "experiment_metadata": {
+    "experiment_date": "2025-09-01T17:06:18.182649",
+    "experiment_type": "exact_keyword_search",
+    "search_fields_tested": [
+      "full",
+      "abs"
+    ],
+    "keyword_combinations_tested": {
+      "full_text": [
+        "10",
+        "15",
+        "20",
+        "5",
+        "7"
+      ],
+      "abstract": [
+        "10",
+        "2",
+        "3",
+        "4",
+        "5"
+      ]
+    },
+    "wumacat_baseline_size": 424,
+    "top_keywords_used": [
+      "binary",
+      "light",
+      "contact",
+      "period",
+      "photometric",
+      "mass",
+      "type",
+      "curves",
+      "binaries",
+      "eclipsing"
+    ]
   },
-  "results": {
+  "results_summary": {
+    "best_precision": {
+      "field": "Abstract",
+      "keywords_count": "10",
+      "precision": 35.44303797468354,
+      "keywords": [
+        "binary",
+        "light",
+        "contact",
+        "period",
+        "photometric",
+        "mass",
+        "type",
+        "curves",
+        "binaries",
+        "eclipsing"
+      ]
+    },
+    "best_recall": {
+      "field": "Full-text",
+      "keywords_count": "5",
+      "recall": 83.01886792452831,
+      "keywords": [
+        "binary",
+        "light",
+        "contact",
+        "period",
+        "photometric"
+      ]
+    },
+    "best_f1": {
+      "field": "Full-text",
+      "keywords_count": "20",
+      "f1_score": 29.246676514032494,
+      "keywords": [
+        "binary",
+        "light",
+        "contact",
+        "period",
+        "photometric",
+        "mass",
+        "type",
+        "curves",
+        "binaries",
+        "eclipsing",
+        "orbital",
+        "ratio",
+        "curve",
+        "component",
+        "star",
+        "components",
+        "massive",
+        "solutions",
+        "wilson",
+        "devinney"
+      ]
+    },
+    "most_efficient": {
+      "field": "Abstract",
+      "keywords_count": "10",
+      "efficiency": 2.8214285714285716,
+      "keywords": [
+        "binary",
+        "light",
+        "contact",
+        "period",
+        "photometric",
+        "mass",
+        "type",
+        "curves",
+        "binaries",
+        "eclipsing"
+      ]
+    }
+  },
+  "detailed_results": {
     "full_text_results": {
       "source_field": "full",
       "total_keywords_available": 25,
@@ -31537,45 +31643,6 @@
           "size": 5,
           "score": 28.911253430924063
         }
-      }
-    },
-    "best_strategies": {
-      "best_precision": {
-        "field": "abs",
-        "size": 10,
-        "precision": 35.44303797468354
-      },
-      "best_recall": {
-        "field": "full",
-        "size": 5,
-        "recall": 83.01886792452831
-      },
-      "recommended": {
-        "field": "full",
-        "size": 20,
-        "f1_score": 29.246676514032494,
-        "keywords": [
-          "binary",
-          "light",
-          "contact",
-          "period",
-          "photometric",
-          "mass",
-          "type",
-          "curves",
-          "binaries",
-          "eclipsing",
-          "orbital",
-          "ratio",
-          "curve",
-          "component",
-          "star",
-          "components",
-          "massive",
-          "solutions",
-          "wilson",
-          "devinney"
-        ]
       }
     }
   }
