@@ -65,7 +65,46 @@ python -c "from src.ads_parser import download_catalogue_abstracts; download_cat
 - **Exact matching**: `search_exact_keywords()` for precision searches using `=field:"keyword"` syntax
 - **Similarity search**: `find_similar_papers()`, `find_similar_papers_bulk()` using ADS `similar()` function
 - **Analysis**: `compare_search_strategies()`, `test_keyword_combination_sizes()` for search optimization
+- **PDF download**: `download_pdfs(bibcodes, output_dir)` — arXiv primary, ADS resolver fallback chain
 - **Retry logic**: `_make_ads_request_with_retry()` handles rate limits (429/502/503/504) with exponential backoff and jitter
+- **Search flags**: `astronomy_only=True` (default) appends `AND database:astronomy`; `open_access_only=True` restricts to `esources:EPRINT_PDF`
+
+**`src/pdf_utils.py`** - PDF format detection and text extraction:
+- `detect_pdf_type(pdf_path)` → PDFInfo with `pdf_type` ("text" | "image"), page stats, recommended tool
+- `detect_all_pdfs(pdf_dir)` → batch detection with summary table
+- `extract_text(pdf_path, max_pages)` → full text via PyMuPDF
+- `extract_abstract(pdf_path)` → abstract section only (pages 1-2, stops at Introduction/Keywords)
+- `extract_conclusions(pdf_path)` → conclusions section (last match, stops at References/Acknowledgements)
+
+**`src/relevance_keywords.py`** - Stage 1 keyword scoring:
+- `KEYWORD_DICT` with 5 categories (system_type, parameters, methods, observations, physics), 80+ terms, weights 1-3
+- Score formula: `sum(weight × log2(1 + count)) / sqrt(word_count / 100)`
+- `score_text(text)` → RelevanceResult(score, verdict, matched_terms, category_scores)
+- `score_pdf(pdf_path, abstract_only=False)` → RelevanceResult
+
+**`src/embeddings.py`** - Stage 2/3 semantic similarity (fastembed, ONNX, no PyTorch):
+- Model: `BAAI/bge-small-en-v1.5` (384-dim); thresholds: relevant ≥ 0.840, borderline ≥ 0.836
+- `build_wumacat_centroid(force=False)` → embeds WUMaCat title+abstract, saves L2-normalised centroid
+- `load_centroid()` → loads `data/wumacat_centroid.npy`
+- `similarity_score(text, centroid)` → EmbeddingResult(similarity, verdict)
+- `similarity_score_pdf(pdf_path, centroid)` → uses `extract_abstract()` for like-for-like comparison
+- `calibrate_thresholds(n_sample)` → distribution stats for threshold tuning
+- Saved artefacts: `data/wumacat_centroid.npy`, `data/wumacat_embeddings.npy`, `data/wumacat_embed_meta.json`
+
+**`src/classifier.py`** - 3-stage paper relevance pipeline:
+- Stage 1: keyword score ≥ 2.0 AND system_type hit → RELEVANT; score < 0.5 → NOT_RELEVANT
+- Stage 2: abstract cosine similarity ≥ 0.840 → RELEVANT; < 0.836 → NOT_RELEVANT
+- Stage 3: conclusions cosine similarity ≥ 0.820 → RELEVANT; no conclusions → NOT_RELEVANT
+- `classify_paper(pdf_path, centroid)` → ClassificationResult(verdict, exit_stage, stages)
+- `classify_all(pdf_dir, centroid, verbose)` → List[ClassificationResult] with summary
+
+**`src/paper_index.py`** - In-memory semantic index for parameter extraction:
+- Step 1 `extract_objects(pdf_path)` → ObjectList ranked by mention frequency (regex + table-column parsing)
+- Step 2 `chunk_paper(pdf_path, objects)` → List[Chunk] split by section headings + pdfplumber table rows
+- Step 3 `PaperIndex(pdf_path)` → embeds all chunks, ready for semantic queries
+- `PaperIndex.query(question, object_name, top_k, chunk_types)` → List[SearchHit] by cosine similarity
+- Object-scoped queries: prepend object name to query and filter chunks containing that object
+- Supported object formats: variable stars (EP Cep), V-number (V369 Cep), NGC members, KIC, TIC, OGLE, 2MASS
 
 **`src/wordcloud_utils.py`** - Text mining and visualization utilities:
 - **Text processing**: `clean_text()`, `extract_abstracts()`, `extract_titles()` with configurable stopwords
@@ -90,12 +129,48 @@ python -c "from src.ads_parser import download_catalogue_abstracts; download_cat
 **Key datasets in `data/`**:
 - `WUMaCat.csv`: Reference catalogue (688 systems, 424 unique bibcodes)
 - `wumacat_abstracts.json`: Complete abstracts and metadata for WUMaCat
+- `wumacat_centroid.npy`: Pre-computed WUMaCat embedding centroid (384-dim, gitignored)
+- `wumacat_embeddings.npy`: Per-paper embedding matrix (N×384, gitignored)
+- `wumacat_embed_meta.json`: Centroid metadata and threshold info
 - `*_experiment_results.json`: Systematic keyword and search strategy experiments
 - `*_summary.csv`: Statistical summaries of experiment results
+- `search_download_table.csv`: bibcode | pdf_file | fallback_url (keyword search output)
+- `similarity_download_table.csv`: bibcode | title | year | seeds_matched | avg_score | pdf_file | fallback_url
 
 **Generated outputs**:
+- `data/pdfs/`: Downloaded PDF files (gitignored — large binaries)
 - `wordclouds/`: Word cloud PNG images (300dpi) and frequency JSON files
 - Intermediate saves: Every 5 batches during bulk downloads to prevent data loss
+
+### Scripts
+
+**`scripts/experiment_and_crossmatch.py`** — Keyword search + WUMaCat cross-match experiment
+**`scripts/search_and_download.py`** — Keyword search → download PDFs → produce `search_download_table.csv`
+**`scripts/similarity_search_and_download.py`** — ADS similarity search from seed papers → top-10 → download
+
+### Classification & Extraction Pipeline
+
+```
+PDF
+ └─ detect_pdf_type()          text / image
+      └─ classify_paper()       3-stage relevance filter
+           └─ PaperIndex()      object extraction + chunking + embedding
+                └─ .query()     semantic retrieval → top-k chunks
+                     └─ param_extractor (TODO)  regex extraction of values
+```
+
+Run order for a new paper:
+```bash
+python -c "
+from src.classifier import classify_paper
+from src.paper_index import PaperIndex
+r = classify_paper('data/pdfs/paper.pdf')
+r.print()
+if r.verdict == 'relevant':
+    idx = PaperIndex('data/pdfs/paper.pdf')
+    hits = idx.query('mass ratio q', top_k=5)
+"
+```
 
 ### Notebook Organization
 

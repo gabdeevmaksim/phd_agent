@@ -88,11 +88,9 @@ coverage/
 .coverage
 htmlcov/
 
-# Large data files (optional - uncomment if you don't want to track large data)
-# data/*.json
-# data/*.csv
-# wordclouds/*.png
-# wordclouds/*.json
+# Large data files
+data/pdfs/           # downloaded PDF files (large binaries)
+data/*.npy           # numpy embedding matrices (generated artefacts)
 
 # Temporary files
 *.tmp

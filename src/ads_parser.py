@@ -727,16 +727,21 @@ def count_publications_for_keywords(keywords, search_fields="full", description=
         return 0
 
 
-def search_all_bibcodes(keywords, search_fields="full", silent=False):
+def search_all_bibcodes(keywords, search_fields="full", silent=False, extra_filter: str = "",
+                        open_access_only: bool = False, astronomy_only: bool = True):
     """
     Search for papers and return ALL bibcodes using pagination.
     Handles the 2000 per request limit automatically.
-    
+
     Args:
         keywords (list): List of keywords to search for
         search_fields (str): "title", "abs", "full", or "title,abs"
         silent (bool): If True, suppress output messages
-    
+        extra_filter (str): Optional extra ADS filter appended with AND (e.g. "year:[0 TO 2020]")
+        open_access_only (bool): If True, restrict results to open-access papers with an arXiv
+            PDF (esources:EPRINT_PDF).  These are the papers download_pdfs() can retrieve.
+        astronomy_only (bool): If True (default), restrict results to the ADS astronomy database.
+
     Returns:
         list: List of all bibcodes found
     """
@@ -744,9 +749,9 @@ def search_all_bibcodes(keywords, search_fields="full", silent=False):
         if not silent:
             print("❌ Error: ADS_API_TOKEN not found in environment variables")
         return []
-    
+
     headers = {"Authorization": f"Bearer {ADS_API_TOKEN}"}
-    
+
     # Build query based on search fields
     if search_fields == "title":
         query_parts = [f"title:{keyword}" for keyword in keywords]
@@ -762,9 +767,15 @@ def search_all_bibcodes(keywords, search_fields="full", silent=False):
         if not silent:
             print(f"❌ Invalid search_fields: {search_fields}")
         return []
-    
+
     # Join keywords with AND operator
     query = " AND ".join(query_parts)
+    if astronomy_only:
+        query = f"{query} AND database:astronomy"
+    if extra_filter:
+        query = f"{query} AND {extra_filter}"
+    if open_access_only:
+        query = f"{query} AND esources:EPRINT_PDF"
     
     # First request to get total count
     initial_params = {
@@ -1467,5 +1478,274 @@ def analyze_similarity_overlap(reference_bibcode: str, comparison_bibcodes: Set[
     print(f"   Similar papers found: {len(similar_bibcodes)}")
     print(f"   Overlap with comparison set: {len(overlap_bibcodes)}/{len(comparison_bibcodes)} ({overlap_percentage:.1f}%)")
     print(f"   Coverage of similar papers: {len(overlap_bibcodes)}/{len(similar_bibcodes)} ({similarity_coverage:.1f}%)")
-    
+
+    return results
+
+
+def _extract_arxiv_id(identifiers: List[str]) -> Optional[str]:
+    """
+    Extract a usable arXiv ID from a list of ADS identifier strings.
+
+    Handles these formats (in priority order):
+      1. "arXiv:2103.12345"           -> "2103.12345"
+      2. "2103.12345"                 -> "2103.12345"   (new-style, post-2007)
+      3. "hep-th/0123456"             -> "hep-th/0123456" (old-style)
+      4. "10.48550/arXiv.1708.00575"  -> "1708.00575"   (arXiv DOI)
+      5. "2016arXiv160706152C"        -> "1607.06152"   (ADS bibcode-style)
+    """
+    import re
+
+    for ident in identifiers:
+        # Format 4: arXiv DOI  10.48550/arXiv.XXXX.XXXXX
+        m = re.search(r"10\.48550/arXiv\.(\d{4}\.\d{4,5})", ident, re.IGNORECASE)
+        if m:
+            return m.group(1)
+
+        # Formats 1 & 2: arXiv:XXXX.XXXXX  or  bare XXXX.XXXXX
+        m = re.match(r"(?:arXiv:)?(\d{4}\.\d{4,5})$", ident, re.IGNORECASE)
+        if m:
+            return m.group(1)
+
+        # Format 3: old-style  subject/NNNNNNN
+        m = re.match(r"([a-z\-]+/\d{7})$", ident, re.IGNORECASE)
+        if m:
+            return m.group(1)
+
+        # Format 5: ADS bibcode-style  YYYYarXivYYMMNNNNNX
+        m = re.match(r"\d{4}arXiv(\d{4})(\d+)[A-Z]$", ident, re.IGNORECASE)
+        if m:
+            yymm, seq = m.group(1), m.group(2).lstrip("0") or "1"
+            return f"{yymm}.{seq.zfill(5)}"
+
+    return None
+
+
+def _get_fallback_pdf_url(bibcode: str, headers: Dict[str, str]) -> Optional[tuple]:
+    """
+    Query the ADS resolver for a freely accessible PDF URL when no arXiv ID exists.
+
+    Tries sources in priority order:
+        ADS_PDF  > ADS_SCAN  > PUB_PDF  (PUB_PDF last — often paywalled)
+
+    Returns:
+        (url, source_type) tuple, or None if nothing found.
+    """
+    try:
+        response = requests.get(
+            f"{ADS_API_BASE_URL}/resolver/{bibcode}/esource",
+            headers=headers,
+            timeout=15,
+        )
+        if response.status_code != 200:
+            return None
+
+        records = response.json().get("links", {}).get("records", [])
+        priority = ["ADS_PDF", "ADS_SCAN", "PUB_PDF"]
+        candidates: Dict[str, str] = {}
+
+        for rec in records:
+            link_type = rec.get("link_type", "")
+            url = rec.get("url", "")
+            for src in priority:
+                if src in link_type and src not in candidates:
+                    candidates[src] = url
+
+        for src in priority:
+            if src in candidates:
+                return candidates[src], src
+
+    except requests.exceptions.RequestException:
+        pass
+
+    return None
+
+
+def get_paper_links(bibcode: str, headers: Dict[str, str]) -> Dict[str, str]:
+    """
+    Query the ADS resolver for all available links for a bibcode.
+
+    Returns a dict with any of these keys that are present:
+        doi, html, pub_pdf, ads_pdf, ads_scan
+    """
+    link_map = {
+        "DOI":       "doi",
+        "PUB_HTML":  "html",
+        "PUB_PDF":   "pub_pdf",
+        "ADS_PDF":   "ads_pdf",
+        "ADS_SCAN":  "ads_scan",
+    }
+    result: Dict[str, str] = {}
+    try:
+        r = requests.get(
+            f"{ADS_API_BASE_URL}/resolver/{bibcode}/esource",
+            headers=headers,
+            timeout=15,
+        )
+        if r.status_code != 200:
+            return result
+        for rec in r.json().get("links", {}).get("records", []):
+            link_type = rec.get("link_type", "")
+            url = rec.get("url", "")
+            for key, field in link_map.items():
+                if key in link_type and field not in result:
+                    result[field] = url
+
+        # Also try the /doi resolver for a clean DOI if not already found
+        if "doi" not in result:
+            r2 = requests.get(
+                f"{ADS_API_BASE_URL}/resolver/{bibcode}/doi",
+                headers=headers,
+                timeout=15,
+            )
+            if r2.status_code == 200:
+                doi_url = r2.json().get("links", {}).get("url", "")
+                if doi_url:
+                    result["doi"] = doi_url
+    except requests.exceptions.RequestException:
+        pass
+    return result
+
+
+def download_pdfs(
+    bibcodes: List[str],
+    output_dir: str,
+    delay_between_requests: float = 2.0,
+    skip_existing: bool = True,
+) -> Dict:
+    """
+    Download PDF files for a list of bibcodes using arXiv as primary source.
+
+    Fetches the arXiv identifier for each bibcode via the ADS API, then
+    downloads the PDF directly from arxiv.org.  Papers without an arXiv
+    preprint are skipped and reported separately.
+
+    Args:
+        bibcodes: List of ADS bibcodes to download.
+        output_dir: Directory where PDF files will be saved.
+        delay_between_requests: Seconds to wait between downloads (be polite).
+        skip_existing: If True, skip bibcodes whose PDF already exists on disk.
+
+    Returns:
+        dict with keys:
+            downloaded  – list of bibcodes successfully saved
+            skipped     – list of bibcodes skipped (file already existed)
+            no_source   – list of bibcodes with no accessible PDF source
+            failed      – list of bibcodes where the download failed
+            pdf_files   – dict mapping bibcode -> pdf filename (downloaded + skipped)
+    """
+    if not ADS_API_TOKEN:
+        print("❌ Error: ADS_API_TOKEN not found in environment variables")
+        return {}
+
+    os.makedirs(output_dir, exist_ok=True)
+
+    results: Dict = {
+        "downloaded": [],
+        "skipped": [],
+        "no_source": [],
+        "failed": [],
+        "pdf_files": {},   # bibcode -> pdf filename
+    }
+
+    headers = get_ads_headers()
+    total = len(bibcodes)
+    print(f"🚀 Starting PDF download for {total} bibcodes")
+    print(f"📂 Output directory: {output_dir}")
+    print()
+
+    # --- Step 1: fetch arXiv identifiers from ADS in batches ---
+    batch_size = 100
+    arxiv_map: Dict[str, str] = {}  # bibcode -> arXiv ID
+
+    for batch_start in range(0, total, batch_size):
+        batch = bibcodes[batch_start : batch_start + batch_size]
+        bibcode_query = " OR ".join(f"bibcode:{b}" for b in batch)
+
+        params = {
+            "q": bibcode_query,
+            "fl": "bibcode,identifier",
+            "rows": len(batch),
+        }
+
+        response = _make_ads_request_with_retry(
+            f"{ADS_API_BASE_URL}/search/query", headers, params
+        )
+
+        if response is None or response.status_code != 200:
+            print(f"⚠️  Could not fetch identifiers for batch {batch_start // batch_size + 1}")
+            continue
+
+        docs = response.json().get("response", {}).get("docs", [])
+        for doc in docs:
+            bibcode = doc.get("bibcode", "")
+            identifiers = doc.get("identifier", [])
+            arxiv_id = _extract_arxiv_id(identifiers)
+            if arxiv_id:
+                arxiv_map[bibcode] = arxiv_id
+
+    print(f"📋 arXiv IDs found: {len(arxiv_map)}/{total}")
+    print()
+
+    # --- Step 2: download PDFs from arxiv.org ---
+    for i, bibcode in enumerate(bibcodes, 1):
+        arxiv_id = arxiv_map.get(bibcode)
+
+        safe_name = bibcode.replace("/", "_").replace(":", "_")
+        pdf_path = os.path.join(output_dir, f"{safe_name}.pdf")
+
+        pdf_filename = os.path.basename(pdf_path)
+
+        if skip_existing and os.path.exists(pdf_path):
+            print(f"[{i}/{total}] ⏭️  Already exists — {bibcode}")
+            results["skipped"].append(bibcode)
+            results["pdf_files"][bibcode] = pdf_filename
+            continue
+
+        # Determine download URL: arXiv preferred, fallback to ADS/publisher
+        if arxiv_id:
+            url = f"https://arxiv.org/pdf/{arxiv_id}"
+            source_label = f"arXiv:{arxiv_id}"
+        else:
+            fallback = _get_fallback_pdf_url(bibcode, headers)
+            if fallback is None:
+                print(f"[{i}/{total}] ⚠️  No PDF source found — {bibcode}")
+                results["no_source"].append(bibcode)
+                time.sleep(delay_between_requests)
+                continue
+            url, source_type = fallback
+            source_label = source_type
+
+        try:
+            response = requests.get(url, timeout=60,
+                                    headers={"User-Agent": "phd_agent/1.0"},
+                                    allow_redirects=True)
+
+            if response.status_code == 200 and response.content[:4] == b"%PDF":
+                with open(pdf_path, "wb") as f:
+                    f.write(response.content)
+                size_kb = len(response.content) // 1024
+                print(f"[{i}/{total}] ✅ Downloaded ({size_kb} KB) — {bibcode} [{source_label}]")
+                results["downloaded"].append(bibcode)
+                results["pdf_files"][bibcode] = pdf_filename
+            else:
+                print(f"[{i}/{total}] ❌ Not a PDF (status {response.status_code}) — {bibcode} [{source_label}]")
+                results["failed"].append(bibcode)
+
+        except requests.exceptions.RequestException as e:
+            print(f"[{i}/{total}] ❌ Request error — {bibcode}: {e}")
+            results["failed"].append(bibcode)
+
+        time.sleep(delay_between_requests)
+
+    # --- Summary ---
+    print()
+    print("=" * 50)
+    print("📊 DOWNLOAD SUMMARY")
+    print("=" * 50)
+    print(f"  ✅ Downloaded  : {len(results['downloaded'])}")
+    print(f"  ⏭️  Skipped     : {len(results['skipped'])}")
+    print(f"  ⚠️  No source  : {len(results['no_source'])}")
+    print(f"  ❌ Failed      : {len(results['failed'])}")
+    print("=" * 50)
+
     return results
