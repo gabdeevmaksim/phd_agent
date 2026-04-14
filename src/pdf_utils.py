@@ -240,6 +240,140 @@ def extract_conclusions(pdf_path: str) -> Optional[str]:
     return result if len(result) >= 80 else None
 
 
+def ocr_pdf(pdf_path: str, dpi: int = 200, engine: str = "easyocr") -> str:
+    """
+    OCR an image-based (scanned) PDF and return extracted text.
+
+    Renders each page to a raster image via PyMuPDF, then passes it
+    through the chosen OCR engine.
+
+    Args:
+        pdf_path: Path to the PDF file.
+        dpi:      Render resolution (200 is a good balance of speed vs quality).
+        engine:   "easyocr" (default) or "nougat".
+                  - easyocr: page-by-page raster OCR, works offline, CPU-only.
+                  - nougat: scientific-PDF-aware transformer OCR; downloads a
+                            ~1 GB model on first use; much slower but better
+                            at equations, tables, and LaTeX.
+
+    Returns:
+        Concatenated OCR text for all pages.
+    """
+    if engine == "nougat":
+        return _ocr_nougat(pdf_path)
+    return _ocr_easyocr(pdf_path, dpi=dpi)
+
+
+def _ocr_easyocr(pdf_path: str, dpi: int = 200) -> str:
+    """EasyOCR-based page-by-page OCR."""
+    import warnings
+    import numpy as np
+
+    # Lazy import — EasyOCR is heavy and slow to initialise
+    try:
+        import easyocr
+    except ImportError:
+        raise ImportError("easyocr is not installed. Run: pip install easyocr")
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        reader = easyocr.Reader(["en"], gpu=False, verbose=False)
+
+    doc = fitz.open(pdf_path)
+    scale = dpi / 72.0
+    mat = fitz.Matrix(scale, scale)
+
+    pages_text: List[str] = []
+    for page in doc:
+        pix = page.get_pixmap(matrix=mat, colorspace=fitz.csRGB)
+        img_array = np.frombuffer(pix.samples, dtype=np.uint8).reshape(
+            pix.height, pix.width, 3
+        )
+        results = reader.readtext(img_array, detail=0, paragraph=True)
+        pages_text.append("\n".join(results))
+
+    doc.close()
+    return "\n\n".join(pages_text)
+
+
+def _ocr_nougat(pdf_path: str, page_timeout: int = 300) -> str:
+    """
+    Nougat-based scientific OCR.
+
+    Downloads the 'facebook/nougat-base' model (~1 GB) on first use and
+    caches it in ~/.cache/huggingface/hub/.  Requires PyTorch.
+
+    Args:
+        pdf_path:     Path to the PDF file.
+        page_timeout: Max seconds per page (default 300 = 5 min). Pages that
+                      exceed the limit are skipped with a placeholder.
+                      On CPU-only machines, dense pages can take 5-15 min each;
+                      lower this value to fall back faster to EasyOCR.
+    """
+    import warnings
+    import signal
+
+    try:
+        import torch
+        from transformers import NougatProcessor, VisionEncoderDecoderModel
+    except ImportError:
+        raise ImportError(
+            "nougat OCR requires torch and transformers. "
+            "Run: pip install nougat-ocr"
+        )
+
+    MODEL_ID = "facebook/nougat-base"
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        processor = NougatProcessor.from_pretrained(MODEL_ID)
+        model = VisionEncoderDecoderModel.from_pretrained(MODEL_ID)
+
+    device = torch.device("cpu")
+    model = model.to(device)
+    model.eval()
+
+    from PIL import Image
+
+    doc = fitz.open(pdf_path)
+    # Nougat resizes internally to 896×672; 150 DPI is sufficient to feed it
+    mat = fitz.Matrix(150 / 72.0, 150 / 72.0)
+
+    def _timeout_handler(signum, frame):
+        raise TimeoutError("Nougat page generation timed out")
+
+    pages_text: List[str] = []
+    with torch.no_grad():
+        for page_num, page in enumerate(doc, start=1):
+            pix = page.get_pixmap(matrix=mat, colorspace=fitz.csRGB)
+            img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+
+            pixel_values = processor(images=img, return_tensors="pt").pixel_values
+
+            signal.signal(signal.SIGALRM, _timeout_handler)
+            signal.alarm(page_timeout)
+            try:
+                outputs = model.generate(
+                    pixel_values,
+                    min_length=1,
+                    max_new_tokens=1024,        # cap tokens — long enough for a dense page
+                    bad_words_ids=[[processor.tokenizer.unk_token_id]],
+                    early_stopping=True,
+                )
+                signal.alarm(0)  # cancel alarm
+                sequence = processor.batch_decode(outputs, skip_special_tokens=True)[0]
+                sequence = processor.post_process_generation(sequence, fix_markdown=False)
+            except TimeoutError:
+                signal.alarm(0)
+                print(f"   ⚠️  Nougat timeout on page {page_num} — skipping")
+                sequence = f"[page {page_num}: nougat timeout]"
+
+            pages_text.append(sequence)
+
+    doc.close()
+    return "\n\n".join(pages_text)
+
+
 def extract_abstract(pdf_path: str) -> str:
     """
     Extract just the abstract section from a text-based PDF.

@@ -285,20 +285,26 @@ def _scan_text(text: str) -> dict:
 
 # ── Step 1: Object extraction ─────────────────────────────────────────────────
 
-def extract_objects(pdf_path: str, verbose: bool = True) -> ObjectList:
+def extract_objects(pdf_path: str, verbose: bool = True,
+                    text: Optional[str] = None) -> ObjectList:
     """
     Extract and rank astronomical objects mentioned in a PDF.
 
     Args:
-        pdf_path: Path to a text-based PDF.
+        pdf_path: Path to the PDF file.
         verbose:  Print the ranked object list.
+        text:     Pre-extracted full text (e.g. from OCR). If None, PyMuPDF
+                  is used to extract text directly from the PDF.
 
     Returns:
         ObjectList with objects ranked by mention frequency.
     """
-    doc  = fitz.open(pdf_path)
-    full_text = "\n".join(page.get_text() for page in doc)
-    doc.close()
+    if text is None:
+        doc = fitz.open(pdf_path)
+        full_text = "\n".join(page.get_text() for page in doc)
+        doc.close()
+    else:
+        full_text = text
 
     # -- Source 1: table ID columns --
     table_ids = _extract_table_ids(full_text)
@@ -395,19 +401,22 @@ def _split_into_paragraphs(text: str, max_chars: int = _MAX_CHUNK_CHARS) -> List
     return result
 
 
-def chunk_paper(pdf_path: str, objects: Optional[List[str]] = None) -> List[Chunk]:
+def chunk_paper(pdf_path: str, objects: Optional[List[str]] = None,
+                text: Optional[str] = None) -> List[Chunk]:
     """
     Split a PDF into text chunks and table rows.
 
     Args:
-        pdf_path: Path to a text-based PDF.
+        pdf_path: Path to the PDF file.
         objects:  List of known object names (from extract_objects) for tagging.
                   If None, no object tagging is performed.
+        text:     Pre-extracted full text (e.g. from OCR). If None, PyMuPDF
+                  is used. When text is provided, it is split as a single block
+                  (no per-page attribution).
 
     Returns:
         List of Chunk objects ordered as they appear in the document.
     """
-    doc = fitz.open(pdf_path)
     chunks: List[Chunk] = []
     chunk_id = 0
     objects = objects or []
@@ -417,10 +426,10 @@ def chunk_paper(pdf_path: str, objects: Optional[List[str]] = None) -> List[Chun
 
     def flush_block(section: str, block_lines: List[str], page: int) -> None:
         nonlocal chunk_id
-        text = "\n".join(block_lines).strip()
-        if len(text) < _MIN_CHUNK_CHARS:
+        block_text = "\n".join(block_lines).strip()
+        if len(block_text) < _MIN_CHUNK_CHARS:
             return
-        for para in _split_into_paragraphs(text):
+        for para in _split_into_paragraphs(block_text):
             if len(para) < _MIN_CHUNK_CHARS:
                 continue
             tags = _tag_objects(para, objects)
@@ -434,42 +443,50 @@ def chunk_paper(pdf_path: str, objects: Optional[List[str]] = None) -> List[Chun
             ))
             chunk_id += 1
 
-    for page_num, page in enumerate(doc, start=1):
-        page_text = page.get_text()
-        lines = page_text.split('\n')
-
-        for line in lines:
+    if text is not None:
+        # Pre-supplied text (e.g. from OCR) — process as one block
+        for line in text.split('\n'):
             stripped = line.strip()
             if not stripped:
                 current_block.append("")
                 continue
-
-            # Detect section heading
             if _is_heading(stripped):
-                flush_block(current_section, current_block, page_num)
+                flush_block(current_section, current_block, 0)
                 current_section = stripped.strip()
                 current_block = []
                 continue
-
             current_block.append(stripped)
-
-        # Flush at each page boundary to keep page attribution accurate
+        flush_block(current_section, current_block, 0)
+    else:
+        doc = fitz.open(pdf_path)
+        for page_num, page in enumerate(doc, start=1):
+            page_text = page.get_text()
+            for line in page_text.split('\n'):
+                stripped = line.strip()
+                if not stripped:
+                    current_block.append("")
+                    continue
+                if _is_heading(stripped):
+                    flush_block(current_section, current_block, page_num)
+                    current_section = stripped.strip()
+                    current_block = []
+                    continue
+                current_block.append(stripped)
+            # Flush at each page boundary to keep page attribution accurate
+            if current_block:
+                flush_block(current_section, current_block, page_num)
+                current_block = []
         if current_block:
-            flush_block(current_section, current_block, page_num)
-            current_block = []
+            flush_block(current_section, current_block, len(doc))
+        doc.close()
 
-    # Flush any remaining content
-    if current_block:
-        flush_block(current_section, current_block, len(doc))
-
-    doc.close()
-
-    # ── Table rows via pdfplumber ─────────────────────────────────────────────
-    try:
-        import pdfplumber
-        chunks.extend(_extract_table_chunks(pdf_path, objects, start_id=chunk_id))
-    except ImportError:
-        pass  # pdfplumber optional — table chunks skipped
+    # ── Table rows via pdfplumber (only for native-text PDFs) ─────────────────
+    if text is None:
+        try:
+            import pdfplumber
+            chunks.extend(_extract_table_chunks(pdf_path, objects, start_id=chunk_id))
+        except ImportError:
+            pass  # pdfplumber optional — table chunks skipped
 
     return chunks
 
@@ -555,7 +572,15 @@ class PaperIndex:
         hits = idx.query("mass ratio", object_name="V369 Cep", top_k=3)
     """
 
-    def __init__(self, pdf_path: str, verbose: bool = True):
+    def __init__(self, pdf_path: str, verbose: bool = True,
+                 text: Optional[str] = None):
+        """
+        Args:
+            pdf_path: Path to the PDF file.
+            verbose:  Print indexing progress.
+            text:     Pre-extracted full text (e.g. from OCR for image PDFs).
+                      If None, text is extracted directly from the PDF via PyMuPDF.
+        """
         self.pdf_path = pdf_path
         self._model = None   # lazy-loaded
 
@@ -563,13 +588,15 @@ class PaperIndex:
             print(f"\n📄 Indexing: {pdf_path}")
 
         # Step 1 — object list
-        self.object_list: ObjectList = extract_objects(pdf_path, verbose=verbose)
+        self.object_list: ObjectList = extract_objects(
+            pdf_path, verbose=verbose, text=text
+        )
 
         # Step 2 — chunks
         if verbose:
             print(f"\n✂️  Chunking paper …")
         self.chunks: List[Chunk] = chunk_paper(
-            pdf_path, objects=self.object_list.objects
+            pdf_path, objects=self.object_list.objects, text=text
         )
         if verbose:
             n_sec = sum(1 for c in self.chunks if c.chunk_type == "section")

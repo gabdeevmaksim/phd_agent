@@ -24,6 +24,10 @@ Parameters extracted (matching WUMaCat columns)
   L3     — third-light fraction (dimensionless, 0-1)
   d      — distance (pc)
   Age    — stellar age (Gyr)
+  ET     — eclipse type: 0 = partial, 1 = total  (categorical)
+  Solver — light-curve code: WD, PHOEBE, BM3, NF, … (categorical)
+  Spots  — spot model used in solution: 0 = no, 1 = yes (categorical)
+  Type   — W UMa subtype: W = less-massive component hotter, A = opposite (categorical)
 
 Usage
 -----
@@ -57,8 +61,11 @@ _UF = r'(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?'
 # Signed float (for dPdt which can be negative)
 _SF = r'[+-]?\s*(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?'
 
-# Uncertainty suffix:  ± 0.03  or  (0.03)
+# Uncertainty suffix (non-capturing):  ± 0.03  or  (0.03)
 _UNC = rf'(?:\s*[±]\s*{_UF}|\s*\(\s*{_UF}\s*\))?'
+
+# Uncertainty suffix (capturing — use when you need group(2) = unc value)
+_CUNC = rf'(?:\s*[±]\s*({_UF})|\s*\(\s*({_UF})\s*\))?'
 
 # Combined value + optional uncertainty
 _VAL = rf'({_UF}){_UNC}'
@@ -69,7 +76,11 @@ _SCI = r'(?:\s*[×x×]\s*10\s*[\^]?\s*[-−]?\d+)?'
 # Unicode subscripts → normal subscript chars used in papers
 # e.g. T₁ → T1, M₂ → M2
 def _normalize(text: str) -> str:
-    """Normalize Unicode subscripts/superscripts and minus signs."""
+    """
+    Normalize Unicode subscripts/superscripts, minus signs, and common
+    OCR artifacts so downstream regex patterns can match consistently.
+    """
+    import re as _re
     replacements = {
         '₁': '1', '₂': '2', '₃': '3',
         '¹': '1', '²': '2', '³': '3',
@@ -81,25 +92,78 @@ def _normalize(text: str) -> str:
     }
     for src, dst in replacements.items():
         text = text.replace(src, dst)
+
+    # ── Nougat LaTeX cleanup ──────────────────────────────────────────────────
+    # LaTeX table row-end \\ → newline (must come first so ^ anchors work later)
+    text = _re.sub(r'\s*\\\\\s*', '\n', text)
+    # \(\pm\) or \pm → ±
+    text = text.replace(r'\(\pm\)', '±').replace(r'\pm', '±')
+    # Degree: \({}^{\circ}\).2  →  .2 deg   (backslash before ) is optional)
+    text = _re.sub(r'\\?\(?s*\{\s*\}\s*\^\s*\{\\circ\}\s*\\?\)?\s*\.(\d)', r'.\1 deg', text)
+    text = _re.sub(r'\\?\(?\s*\{\s*\}\s*\^\s*\{\\circ\}\s*\\?\)?', r' deg', text)
+    # Generic inline math \(...\) — strip delimiters, keep content
+    text = _re.sub(r'\\\(([^)]{0,80})\\\)', r'\1', text)
+    # Remove leftover LaTeX: {}, ^, \circ → deg, \Omega → Omega
+    text = text.replace(r'\circ', ' deg').replace(r'\Omega', 'Omega')
+    text = _re.sub(r'\\[a-zA-Z]+\b', '', text)  # \cmd → ''
+    text = _re.sub(r'[{}^]', '', text)            # {, }, ^ → ''
+    # Table cell separator & → two spaces (Nougat LaTeX tables)
+    text = _re.sub(r'\s*&\s*', '  ', text)
+    # "T00" (Nougat rendering of T₀₀ / T_eff table row label)
+    text = text.replace('T00', 'T0')
+
+    # ── OCR artifact fixes ────────────────────────────────────────────────────
+    # Reunite hyphenated line-breaks: "con-\nverged" → "converged"
+    text = _re.sub(r'(\w)-\s*\n\s*(\w)', r'\1\2', text)
+    # OCR often reads "q-0.XXX" or "9-0.XXX" where the original is "q = 0.XXX"
+    # Fix: if "9" or "Q" appears as isolated char before -0.XX, treat as "q ="
+    text = _re.sub(r'\b9\s*-\s*(0\.\d)', r'q = \1', text)
+    text = _re.sub(r'\bQ\s*-\s*(0\.\d)', r'q = \1', text)
+    # "mass ratio(q-0.XX)" or "mass ratio(q=0.XX)" → "mass ratio q = 0.XX"
+    text = _re.sub(
+        r'mass\s+ratio\s*\(\s*[qQ9]\s*[=\-]\s*([\d.]+)\s*\)',
+        r'mass ratio q = \1',
+        text,
+    )
+    # "q-0.XXX" standalone (not preceded by letter) → "q = 0.XXX"
+    text = _re.sub(r'(?<!\w)q\s*-\s*(0\.\d)', r'q = \1', text)
+
     return text
 
 
 # ── Result dataclass ──────────────────────────────────────────────────────────
 
+# Source provenance labels
+SOURCE_REGEX    = "regex"      # matched by inline pattern in text
+SOURCE_TABLE    = "table"      # parsed from a text-formatted table column
+SOURCE_COMPUTED = "computed"   # derived from other extracted parameters
+SOURCE_MISSING  = "missing"    # not found and could not be computed
+
+
 @dataclass
 class ParamMatch:
     """A single extracted parameter value."""
     param:       str            # parameter name (WUMaCat column)
-    value:       float          # extracted numeric value
+    value:       float          # extracted numeric value (NaN if missing)
     uncertainty: Optional[float] = None
     unit:        str  = ""
-    raw_text:    str  = ""      # the matched text snippet
+    raw_text:    str  = ""      # matched snippet or computation description
     chunk_id:    int  = -1
+    source:      str  = SOURCE_REGEX   # provenance label
+    bibcode:     str  = ""             # originating paper
+
+    @property
+    def is_missing(self) -> bool:
+        import math
+        return self.source == SOURCE_MISSING or math.isnan(self.value)
 
     def __str__(self) -> str:
+        if self.is_missing:
+            return f"  {self.param:<8} = NaN  [missing]"
         unc = f" ± {self.uncertainty}" if self.uncertainty is not None else ""
         unit = f" {self.unit}" if self.unit else ""
-        return (f"  {self.param:<8} = {self.value}{unc}{unit}"
+        src = f" ({self.source})" if self.source != SOURCE_REGEX else ""
+        return (f"  {self.param:<8} = {self.value}{unc}{unit}{src}"
                 f"  [{self.raw_text[:60].strip()}]")
 
 
@@ -118,7 +182,7 @@ class ParamSpec:
 
 
 def _compile(raw_patterns: List[str]) -> List[re.Pattern]:
-    return [re.compile(p, re.IGNORECASE) for p in raw_patterns]
+    return [re.compile(p, re.IGNORECASE | re.MULTILINE) for p in raw_patterns]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -140,6 +204,10 @@ PARAM_SPECS["P"] = ParamSpec(
         rf'period\s+P\s*=\s*({_UF})',
         # "P0 = 0.22660118 day"
         rf'\bP0?\s*=\s*({_UF})\s*d(?:ay)?s?\b',
+        # Ephemeris format: "JD... + 0.41691591 * E" — period is the coefficient of E
+        rf'JD\S*\s*[\d.]+\s*[+\-]\s*({_UF})\s*\*\s*E\b',
+        # "period of 0.226618" (no unit — accept if in valid range)
+        rf'period\s+(?:of\s+)?({_UF})\s*(?:d\b|day)',
     ]),
     queries=["orbital period P days", "period of the binary"],
 )
@@ -193,6 +261,8 @@ PARAM_SPECS["i"] = ParamSpec(
         rf'inclination\s+(?:of\s+|is\s+)({_UF})\s*(?:deg|[°◦])?',
         # "i (°) / 82.8" (table format)
         rf'i\s*[(\[][°◦]?[)\]]\s*\n?\s*({_UF})',
+        # Nougat table row after cleanup: "i  86.2± 0.7" or "i  86.2 deg± 0.7"
+        rf'^i\s+({_UF})\s*(?:deg\s*)?{_CUNC}',
     ]),
     queries=["orbital inclination i degrees", "inclination light curve solution"],
 )
@@ -213,6 +283,10 @@ PARAM_SPECS["T1"] = ParamSpec(
         rf'temperature\s+of\s+the\s+primary\s+[^=\n]*=?\s*({_UF})\s*K',
         # "primary temperature of 5067 K"
         rf'primary\s+(?:effective\s+)?temperature\s+(?:of\s+)?({_UF})\s*K',
+        # "temperature for star 1 ... of 5067 K"  (Nougat prose)
+        rf'temperature\s+for\s+star\s+1\s+[^=\n]{0,40}of\s+({_UF})\s*K',
+        # Nougat table row: "T0  5980  5547" — first value is T1 (adopted, no unc)
+        rf'^T0\s+({_UF})\s+[\d.±\s]+',
     ]),
     queries=["primary effective temperature T1 K", "T1 temperature primary component"],
 )
@@ -228,6 +302,8 @@ PARAM_SPECS["T2"] = ParamSpec(
         rf'\bTeff[,_]?2\s*=\s*({_UF}){_UNC}\s*K?',
         rf'temperature\s+of\s+the\s+secondary\s+[^=\n]*=?\s*({_UF})\s*K',
         rf'secondary\s+(?:effective\s+)?temperature\s+(?:of\s+)?({_UF})\s*K',
+        # Nougat table row: "T0  5980  5547± 16" — second value is T2
+        rf'^T0\s+[\d.]+\s+({_UF}){_CUNC}',
     ]),
     queries=["secondary effective temperature T2 K", "T2 temperature secondary component"],
 )
@@ -341,6 +417,9 @@ PARAM_SPECS["Omega"] = ParamSpec(
         rf'surface\s+potential\s+[^=\n]{0,20}=\s*({_UF})',
         # "Ω1 = Ω2\n9.56 ± 0.03" (table, header on one line, value on next)
         rf'(?:Omega|[Ω])\s*1\s*=\s*(?:[Ω]|Omega)\s*2\s*\n\s*({_UF})',
+        # Nougat table row after cleanup: "Omega1(=Omega2)  2.9202± 0.0058"
+        rf'Omega\s*1\s*\(?=?\s*Omega\s*2\)?\s+({_UF}){_CUNC}',
+        rf'Q1\s*[(-=]+\s*Omega\s*2\)?\s+({_UF}){_CUNC}',
     ]),
     queries=["surface potential Omega contact parameter", "dimensionless potential Roche lobe"],
 )
@@ -357,6 +436,8 @@ PARAM_SPECS["f"] = ParamSpec(
         rf'fill.?out\s+(?:factor\s+)?(?:of\s+|is\s+)?({_UF})',
         rf'contact\s+degree\s+[^=\n]{0,20}=\s*({_UF})',
         rf'fillout\s+(?:parameter|factor)\s*[=:]\s*({_UF})',
+        # Nougat table: "% overcontact  15.5" — convert percent to fraction
+        rf'%\s+overcontact\s+({_UF})',
     ]),
     queries=["fill-out factor contact degree f", "fillout parameter contact binary"],
 )
@@ -369,6 +450,8 @@ PARAM_SPECS["r1p"] = ParamSpec(
         rf'\br1\s*(?:\(pole\))?\s*=\s*({_UF}){_UNC}',
         rf'\br_?\s*1p?\s*=\s*({_UF}){_UNC}',
         rf'fractional\s+radius\s+(?:of\s+the\s+)?primary\s+[^=\n]{0,20}=\s*({_UF})',
+        # Nougat table row: "r(obs)  0.4146± 0.0009  0.3158± 0.0019" — first = r1p
+        rf'^r\s*\(?\w*\)?\s+({_UF}){_CUNC}\s+[\d.±\s]+',
     ]),
     queries=["fractional radius r1 primary pole"],
 )
@@ -380,6 +463,8 @@ PARAM_SPECS["r2p"] = ParamSpec(
         rf'\br2\s*(?:\(pole\))?\s*=\s*({_UF}){_UNC}',
         rf'\br_?\s*2p?\s*=\s*({_UF}){_UNC}',
         rf'fractional\s+radius\s+(?:of\s+the\s+)?secondary\s+[^=\n]{0,20}=\s*({_UF})',
+        # Nougat table row: "r(obs)  0.4146± 0.0009  0.3158± 0.0019" — second = r2p
+        rf'^r\s*\(?\w*\)?\s+{_UF}\s*(?:±\s*{_UF})?\s+({_UF}){_CUNC}',
     ]),
     queries=["fractional radius r2 secondary pole"],
 )
@@ -500,9 +585,15 @@ def extract_params(
                 # Try to grab uncertainty from the match itself or right after
                 unc = None
                 if m.lastindex and m.lastindex >= 2:
-                    unc_str = m.group(2) if m.lastindex >= 2 else None
-                    if unc_str:
-                        unc = _parse_float(unc_str.strip(' ±()'))
+                    # _CUNC has two alternative capture groups (2 and 3)
+                    for g in range(2, m.lastindex + 1):
+                        try:
+                            unc_str = m.group(g)
+                        except IndexError:
+                            continue
+                        if unc_str:
+                            unc = _parse_float(unc_str.strip(' ±()'))
+                            break
                 if unc is None:
                     unc = _extract_uncertainty(text_n, m.end())
 
@@ -727,6 +818,7 @@ def extract_table_block(
                             uncertainty=round(unc, 6) if unc is not None else None,
                             unit=spec.unit,
                             raw_text=val_line,
+                            source=SOURCE_TABLE,
                         )
                 col_idx += 1
                 values_collected += 1
@@ -742,6 +834,349 @@ def extract_table_block(
     return results
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Categorical parameter extraction  (ET, Solver, Spots)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@dataclass
+class CategoricalMatch:
+    param:    str
+    value:    str          # e.g. "WD", "1", "PHOEBE", "" = missing
+    raw_text: str = ""
+    source:   str = SOURCE_REGEX
+    bibcode:  str = ""
+
+    @property
+    def is_missing(self) -> bool:
+        return self.source == SOURCE_MISSING or self.value == ""
+
+    def __str__(self) -> str:
+        if self.is_missing:
+            return f"  {self.param:<8} = —  [missing]"
+        src = f" ({self.source})" if self.source != SOURCE_REGEX else ""
+        return f"  {self.param:<8} = {self.value:<12}{src}  [{self.raw_text[:60].strip()}]"
+
+
+# ── Solver patterns (ordered: more specific first) ───────────────────────────
+_SOLVER_PATTERNS: List[Tuple[re.Pattern, str]] = [
+    # Wilson-Devinney variants
+    (re.compile(r'wilson.devinney|w.d\.\s*code|\bw\.d\b|\bwd\b\s*code|wilson\s*&\s*devinney',
+                re.I), 'WD'),
+    # PHOEBE
+    (re.compile(r'\bphoebe\b', re.I), 'PHOEBE'),
+    # Binary Maker
+    (re.compile(r'binary\s*maker\s*3?|bm\s*3\b', re.I), 'BM3'),
+    # NIGHTFALL
+    (re.compile(r'\bnightfall\b', re.I), 'NF'),
+    # WUMA code
+    (re.compile(r'\bwuma\b|\bw-?uma\s*code\b', re.I), 'WUMA'),
+    # Rucinski's code
+    (re.compile(r'rucinski.*code|spectroscopic\s+orbit\s+code', re.I), 'RU'),
+    # Generic "light curve synthesis"
+    (re.compile(r'light.curve\s+(?:synthesis|modeling|code|program)', re.I), 'LC'),
+]
+
+# ── Eclipse type patterns ─────────────────────────────────────────────────────
+# Total eclipse: light curve has flat bottom at minimum → ET = 1
+_ET_TOTAL = re.compile(
+    r'total(?:ly)?\s+eclips|annular\s+eclips|flat.?bottom(?:ed)?\s+(?:minimum|light\s+curve)|'
+    r'flat\s+(?:primary|secondary)\s+(?:minimum|eclipse)|occultation\s+eclipse',
+    re.I,
+)
+# Partial eclipse: no flat bottom → ET = 0
+_ET_PARTIAL = re.compile(
+    r'partial(?:ly)?\s+eclips|non.?total|no\s+flat\s+bottom|'
+    r'not\s+totally\s+eclips',
+    re.I,
+)
+
+# ── W UMa subtype patterns ───────────────────────────────────────────────────
+_TYPE_W = re.compile(
+    r'\bW.type\s+(?:W\s*UMa|contact|binary)|'
+    r'(?:W\s*UMa|contact\s+binary)\s+of\s+W.type|'
+    r'\bW-subtype\b',
+    re.I,
+)
+_TYPE_A = re.compile(
+    r'\bA.type\s+(?:W\s*UMa|contact|binary)|'
+    r'(?:W\s*UMa|contact\s+binary)\s+of\s+A.type|'
+    r'\bA-subtype\b',
+    re.I,
+)
+
+# ── Spot patterns ─────────────────────────────────────────────────────────────
+# Spots present: explicit mention OR spot parameters in solution table
+_SPOT_PRESENT = re.compile(
+    r'\bstar\s*spots?\b|\bcool\s+spots?\b|\bhot\s+spots?\b|\bspot\s+model\b|'
+    r'spot\s+(?:parameters?|solution|included|added|used)|'
+    r'theta\s*(?:spot|1|2)|psi\s*(?:spot|1|2)|rspot|tspot|'
+    r't\s*spot\s*/\s*t\b|'           # Tspot/T in table
+    r'\\theta_?\s*[12]?\s*\([°◦]\)', # θ₁(°) in table header
+    re.I,
+)
+
+
+def extract_categorical(text: str) -> Dict[str, CategoricalMatch]:
+    """
+    Extract categorical parameters ET, Solver, and Spots from paper text.
+
+    Args:
+        text: Full paper text (normalized or raw).
+
+    Returns:
+        Dict with keys 'ET', 'Solver', 'Spots' where found.
+        Missing keys mean the parameter could not be determined.
+    """
+    text_n = _normalize(text)
+    results: Dict[str, CategoricalMatch] = {}
+
+    # ── Solver ────────────────────────────────────────────────────────────────
+    for pattern, code in _SOLVER_PATTERNS:
+        m = pattern.search(text_n)
+        if m:
+            start = max(0, m.start() - 10)
+            snippet = text_n[start: m.end() + 20].replace('\n', ' ')
+            results['Solver'] = CategoricalMatch('Solver', code, snippet)
+            break   # take the first (most specific) match
+
+    # ── Eclipse type (ET) ─────────────────────────────────────────────────────
+    # Total eclipse is the more specific / distinctive claim — check it first.
+    # NOTE: many papers do not state this explicitly; ET can also be computed
+    # geometrically from inclination and radii via et_from_geometry() below.
+    m_total = _ET_TOTAL.search(text_n)
+    m_partial = _ET_PARTIAL.search(text_n)
+
+    if m_total and (not m_partial or m_total.start() < m_partial.start()):
+        start = max(0, m_total.start() - 10)
+        snippet = text_n[start: m_total.end() + 20].replace('\n', ' ')
+        results['ET'] = CategoricalMatch('ET', '1', snippet)
+    elif m_partial:
+        start = max(0, m_partial.start() - 10)
+        snippet = text_n[start: m_partial.end() + 20].replace('\n', ' ')
+        results['ET'] = CategoricalMatch('ET', '0', snippet)
+    # If neither pattern fires, ET is left absent — use et_from_geometry()
+
+    # ── W UMa subtype (Type) ──────────────────────────────────────────────────
+    m_w = _TYPE_W.search(text_n)
+    m_a = _TYPE_A.search(text_n)
+
+    if m_w and (not m_a or m_w.start() < m_a.start()):
+        start = max(0, m_w.start() - 10)
+        snippet = text_n[start: m_w.end() + 20].replace('\n', ' ')
+        results['Type'] = CategoricalMatch('Type', 'W', snippet)
+    elif m_a:
+        start = max(0, m_a.start() - 10)
+        snippet = text_n[start: m_a.end() + 20].replace('\n', ' ')
+        results['Type'] = CategoricalMatch('Type', 'A', snippet)
+    # If ambiguous, caller should use type_from_params()
+
+    # ── Spots ─────────────────────────────────────────────────────────────────
+    m_spot = _SPOT_PRESENT.search(text_n)
+    if m_spot:
+        start = max(0, m_spot.start() - 10)
+        snippet = text_n[start: m_spot.end() + 20].replace('\n', ' ')
+        results['Spots'] = CategoricalMatch('Spots', '1', snippet)
+    else:
+        results['Spots'] = CategoricalMatch('Spots', '0', 'no spot indicators found')
+
+    return results
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Physical relationship helpers (Tier 2 fallbacks)
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Solar constants
+_T_SUN = 5778.0   # K
+_R_SUN = 6.957e8  # m
+_M_SUN = 1.989e30 # kg
+_G     = 6.674e-11
+
+
+def _kepler_a(M_total_msun: float, P_days: float) -> float:
+    """Orbital separation in R_sun from total mass and period (Kepler's 3rd law)."""
+    import math
+    P_s = P_days * 86400.0
+    a_m = (_G * M_total_msun * _M_SUN * P_s**2 / (4 * math.pi**2)) ** (1/3)
+    return a_m / _R_SUN
+
+
+def _stefan_boltzmann_L(R_rsun: float, T_K: float) -> float:
+    """Luminosity in L_sun from radius (R_sun) and temperature (K)."""
+    return (R_rsun ** 2) * ((T_K / _T_SUN) ** 4)
+
+
+def type_from_params(T1: float, T2: float, q: float) -> str:
+    """
+    Determine W UMa subtype from extracted parameters when the paper
+    doesn't state it explicitly.
+
+    Convention (q = m2/m1, m2 is secondary):
+      - If q < 1 (secondary less massive) and T2 > T1 → W-type
+      - If q < 1 and T1 >= T2                         → A-type
+      - If q > 1 (primary less massive by definition) flip T comparison
+
+    Args:
+        T1: Primary effective temperature (K).
+        T2: Secondary effective temperature (K).
+        q:  Mass ratio m2/m1.
+
+    Returns:
+        'W' or 'A'
+    """
+    # Normalise so m_primary < m_secondary means q_norm < 1
+    if q <= 1:
+        hotter_is_less_massive = T2 > T1
+    else:
+        # q > 1 means secondary more massive — primary is the less massive one
+        hotter_is_less_massive = T1 > T2
+    return 'W' if hotter_is_less_massive else 'A'
+
+
+def et_from_geometry(i_deg: float, r1: float, r2: float) -> int:
+    """
+    Determine eclipse type geometrically when the paper doesn't state it.
+
+    A total (occultation + transit) eclipse occurs when the projected
+    separation at conjunction is small enough that one star fully covers
+    the other:
+
+        cos(i) <= |r1 - r2|    →  total eclipse (ET = 1)
+        cos(i) >  |r1 - r2|    →  partial eclipse (ET = 0)
+
+    Args:
+        i_deg: Orbital inclination in degrees.
+        r1:    Fractional radius of primary (r1p from solution).
+        r2:    Fractional radius of secondary (r2p from solution).
+
+    Returns:
+        1 if total, 0 if partial.
+    """
+    import math
+    cos_i = abs(math.cos(math.radians(i_deg)))
+    return int(cos_i <= abs(r1 - r2))
+
+
+def fill_missing(
+    params: Dict[str, List[ParamMatch]],
+    cats:   Dict[str, CategoricalMatch],
+) -> Tuple[Dict[str, ParamMatch], Dict[str, CategoricalMatch]]:
+    """
+    Apply Tier-2 (computed) and Tier-3 (missing/NaN) fallbacks.
+
+    Takes the raw outputs of extract_params / extract_table_block and
+    extract_categorical, picks the best value for each parameter, then:
+
+      Tier 2 — fills gaps using physical relationships where possible
+      Tier 3 — marks remaining gaps as SOURCE_MISSING with NaN value
+
+    Args:
+        params: Dict[param_name, List[ParamMatch]] from extract_params or
+                merged table + inline results.
+        cats:   Dict from extract_categorical.
+
+    Returns:
+        (filled_params, filled_cats) where every WUMaCat column has an entry.
+        Check pm.is_missing to distinguish found vs absent values.
+    """
+    import math
+
+    # ── Step 1: collapse lists to single best value ───────────────────────────
+    filled: Dict[str, ParamMatch] = {}
+    for pname, spec in PARAM_SPECS.items():
+        bv = best_value(params.get(pname, []))
+        if bv is not None:
+            filled[pname] = bv
+        # else: will be filled in steps 2/3
+
+    # ── Step 2: compute from other parameters ────────────────────────────────
+
+    def _get(name: str) -> Optional[float]:
+        pm = filled.get(name)
+        return pm.value if pm is not None and not pm.is_missing else None
+
+    def _put_computed(name: str, value: float, desc: str) -> None:
+        if name not in filled and not math.isnan(value):
+            spec = PARAM_SPECS[name]
+            lo, hi = spec.valid_range
+            if lo <= value <= hi:
+                filled[name] = ParamMatch(
+                    param=name, value=round(value, 6),
+                    unit=spec.unit, raw_text=desc,
+                    source=SOURCE_COMPUTED,
+                )
+
+    # a — orbital separation from Kepler's 3rd law
+    M1, M2, P = _get('M1'), _get('M2'), _get('P')
+    if M1 and M2 and P:
+        _put_computed('a', _kepler_a(M1 + M2, P),
+                      f"Kepler: M1={M1}+M2={M2} M_sun, P={P} d")
+
+    # M2 from M1 and q
+    q = _get('q')
+    if M1 and q:
+        _put_computed('M2', M1 * q, f"M2 = q * M1 = {q} * {M1}")
+
+    # R1, R2 from fractional radii and separation
+    a = _get('a')
+    r1p, r2p = _get('r1p'), _get('r2p')
+    if a and r1p:
+        _put_computed('R1', a * r1p, f"R1 = r1p * a = {r1p} * {a}")
+    if a and r2p:
+        _put_computed('R2', a * r2p, f"R2 = r2p * a = {r2p} * {a}")
+
+    # L1, L2 from Stefan-Boltzmann: L = (R/R_sun)^2 * (T/T_sun)^4
+    R1, R2 = _get('R1'), _get('R2')
+    T1, T2 = _get('T1'), _get('T2')
+    if R1 and T1:
+        _put_computed('L1', _stefan_boltzmann_L(R1, T1),
+                      f"SB: R1={R1} R_sun, T1={T1} K")
+    if R2 and T2:
+        _put_computed('L2', _stefan_boltzmann_L(R2, T2),
+                      f"SB: R2={R2} R_sun, T2={T2} K")
+
+    # ── Step 2b: categorical fallbacks ───────────────────────────────────────
+    filled_cats = dict(cats)
+
+    # Type from T1, T2, q
+    if 'Type' not in filled_cats and T1 and T2 and q:
+        t = type_from_params(T1, T2, q)
+        filled_cats['Type'] = CategoricalMatch(
+            'Type', t, f"computed: T1={T1}, T2={T2}, q={q}",
+            source=SOURCE_COMPUTED,
+        )
+
+    # ET from inclination and fractional radii
+    i = _get('i')
+    if 'ET' not in filled_cats and i and r1p and r2p:
+        et = et_from_geometry(i, r1p, r2p)
+        filled_cats['ET'] = CategoricalMatch(
+            'ET', str(et), f"computed: i={i}, r1={r1p}, r2={r2p}",
+            source=SOURCE_COMPUTED,
+        )
+
+    # Spots defaults to 0 if not already set
+    filled_cats.setdefault('Spots', CategoricalMatch(
+        'Spots', '0', 'no spot indicators found', source=SOURCE_MISSING,
+    ))
+
+    # ── Step 3: mark everything else as missing ───────────────────────────────
+    for pname, spec in PARAM_SPECS.items():
+        if pname not in filled:
+            filled[pname] = ParamMatch(
+                param=pname, value=float('nan'),
+                unit=spec.unit, raw_text='not found',
+                source=SOURCE_MISSING,
+            )
+
+    for cat_name in ('ET', 'Solver', 'Type', 'Spots'):
+        filled_cats.setdefault(cat_name, CategoricalMatch(
+            cat_name, '', 'not found', source=SOURCE_MISSING,
+        ))
+
+    return filled, filled_cats
+
+
 # ── Query plan: which semantic queries to run for each parameter ──────────────
 
 def param_query_plan() -> Dict[str, List[str]]:
@@ -751,23 +1186,53 @@ def param_query_plan() -> Dict[str, List[str]]:
 
 # ── Pretty printer ────────────────────────────────────────────────────────────
 
-def print_results(results: Dict[str, List[ParamMatch]], label: str = "") -> None:
-    """Print extracted parameters in a table."""
+def print_results(
+    results: Dict[str, "ParamMatch | List[ParamMatch]"],
+    cats:    Optional[Dict[str, CategoricalMatch]] = None,
+    label:   str = "",
+) -> None:
+    """
+    Print extracted parameters in a table.
+
+    Accepts either the raw dict[str, List[ParamMatch]] from extract_params,
+    or the filled dict[str, ParamMatch] from fill_missing.
+    """
+    import math
+
     if label:
         print(f"\n{'='*60}")
         print(f"  {label}")
         print(f"{'='*60}")
-    if not results:
-        print("  (no parameters extracted)")
-        return
-    print(f"  {'PARAM':<8} {'VALUE':>12} {'±':>10}  UNIT    SNIPPET")
-    print("  " + "-" * 75)
-    for pname in PARAM_SPECS:  # iterate in catalogue order
+
+    print(f"  {'PARAM':<8} {'VALUE':>12} {'±':>10}  {'SRC':<10}  SNIPPET")
+    print("  " + "-" * 80)
+
+    for pname in PARAM_SPECS:
         if pname not in results:
             continue
-        bv = best_value(results[pname])
+        entry = results[pname]
+        # Handle both List[ParamMatch] and single ParamMatch
+        bv = best_value(entry) if isinstance(entry, list) else entry
         if bv is None:
             continue
+        if bv.is_missing:
+            print(f"  {pname:<8} {'—':>12}   {'—':>10}  {'missing':<10}")
+            continue
+        val_str = f"{bv.value:.4g}"
         unc_str = f"{bv.uncertainty:.4g}" if bv.uncertainty is not None else "—"
-        snippet = bv.raw_text[:40].replace('\n', ' ')
-        print(f"  {pname:<8} {bv.value:>12.4g} {unc_str:>10}  {bv.unit:<7} {snippet}")
+        snippet = bv.raw_text[:35].replace('\n', ' ')
+        print(f"  {pname:<8} {val_str:>12} {unc_str:>10}  {bv.source:<10}  {snippet}")
+
+    if cats:
+        print()
+        print(f"  {'PARAM':<8} {'VALUE':<12}  {'SRC':<10}  SNIPPET")
+        print("  " + "-" * 60)
+        for cname in ('Type', 'ET', 'Solver', 'Spots'):
+            cm = cats.get(cname)
+            if cm is None:
+                continue
+            if cm.is_missing:
+                print(f"  {cname:<8} {'—':<12}  {'missing':<10}")
+            else:
+                snippet = cm.raw_text[:35].replace('\n', ' ')
+                print(f"  {cname:<8} {cm.value:<12}  {cm.source:<10}  {snippet}")

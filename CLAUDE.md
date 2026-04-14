@@ -12,10 +12,14 @@ PhD Research Agent - ADS Analysis Toolkit for astronomical literature analysis u
    - Obtain token from: https://ui.adsabs.harvard.edu/user/settings/token
    - Never commit this file or expose the token
 
-2. **Installation**:
+2. **Installation** (requires Python 3.12, x86_64 macOS):
    ```bash
+   python3.12 -m venv .venv && source .venv/bin/activate
    pip install -r requirements.txt
    ```
+   > **Note:** PyTorch is capped at 2.2.x on Intel macOS (no CPU wheels for 2.4+ on x86_64).
+   > `requirements.txt` pins `numpy<2`, `transformers<4.45`, and `albumentations<1.4` to ensure
+   > compatibility with nougat-ocr 0.1.17 and torch 2.2.x.
 
 3. **Test Connection**:
    ```bash
@@ -69,12 +73,15 @@ python -c "from src.ads_parser import download_catalogue_abstracts; download_cat
 - **Retry logic**: `_make_ads_request_with_retry()` handles rate limits (429/502/503/504) with exponential backoff and jitter
 - **Search flags**: `astronomy_only=True` (default) appends `AND database:astronomy`; `open_access_only=True` restricts to `esources:EPRINT_PDF`
 
-**`src/pdf_utils.py`** - PDF format detection and text extraction:
+**`src/pdf_utils.py`** - PDF format detection, text extraction, and OCR:
 - `detect_pdf_type(pdf_path)` → PDFInfo with `pdf_type` ("text" | "image"), page stats, recommended tool
 - `detect_all_pdfs(pdf_dir)` → batch detection with summary table
 - `extract_text(pdf_path, max_pages)` → full text via PyMuPDF
 - `extract_abstract(pdf_path)` → abstract section only (pages 1-2, stops at Introduction/Keywords)
 - `extract_conclusions(pdf_path)` → conclusions section (last match, stops at References/Acknowledgements)
+- `ocr_pdf(pdf_path, dpi=200, engine="easyocr")` → OCR text for image-based PDFs
+  - `engine="easyocr"`: page-by-page raster OCR, CPU-only, works offline
+  - `engine="nougat"`: scientific-PDF-aware transformer OCR (downloads ~1 GB model on first use)
 
 **`src/relevance_keywords.py`** - Stage 1 keyword scoring:
 - `KEYWORD_DICT` with 5 categories (system_type, parameters, methods, observations, physics), 80+ terms, weights 1-3
@@ -105,6 +112,26 @@ python -c "from src.ads_parser import download_catalogue_abstracts; download_cat
 - `PaperIndex.query(question, object_name, top_k, chunk_types)` → List[SearchHit] by cosine similarity
 - Object-scoped queries: prepend object name to query and filter chunks containing that object
 - Supported object formats: variable stars (EP Cep), V-number (V369 Cep), NGC members, KIC, TIC, OGLE, 2MASS
+
+**`src/param_extractor.py`** - Regex and table-based parameter extraction:
+- `PARAM_SPECS`: 20 WUMaCat numerical parameters (P, dPdt, q, i, T1, T2, M1, M2, R1, R2, L1, L2, a, Ω, f, r1p, r2p, L3, d, Age)
+- `extract_table_block(text, objects)` → per-object dict of ParamMatch from multi-column parameter tables
+- `extract_params(text)` → dict of List[ParamMatch] from inline regex over full text
+- `extract_categorical(text)` → CategoricalMatch for Type (W/A), ET, Solver (WD/PHOEBE/BM3/NF/WUMA), Spots
+- `fill_missing(params, cats)` → Tier-2 computed fallbacks (Kepler, Stefan-Boltzmann, r×a), Tier-3 NaN markers
+- Source provenance: `SOURCE_TABLE`, `SOURCE_REGEX`, `SOURCE_COMPUTED`, `SOURCE_MISSING` on every match
+
+**`src/pipeline.py`** - End-to-end single-paper extraction pipeline:
+- `process_paper(pdf_path, centroid, skip_classification, verbose)` → PaperResult
+- `process_directory(pdf_dir, output_csv, skip_classification, verbose)` → pd.DataFrame
+- Flow: classify → PaperIndex → table_block + inline_regex + semantic_queries → fill_missing → stamp bibcode
+- Auto-detects image PDFs and routes to EasyOCR before extraction
+
+**`src/catalogue.py`** - Multi-paper object catalogue with conflict resolution:
+- `ObjectCatalogue.add_paper(pdf_path)` / `add_paper_result(result)` → ingest PaperResult
+- `ObjectCatalogue.to_dataframe()` → one row per object, best value per parameter selected
+- Ranking: table+unc > regex+unc > table > regex > computed; categoricals by majority vote
+- Conflict detection: >3σ or >10% fractional difference → `{param}_conflict=True` column
 
 **`src/wordcloud_utils.py`** - Text mining and visualization utilities:
 - **Text processing**: `clean_text()`, `extract_abstracts()`, `extract_titles()` with configurable stopwords
