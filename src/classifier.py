@@ -78,9 +78,41 @@ class ClassificationResult:
 
 # ── Main classifier ───────────────────────────────────────────────────────────
 
+def _split_text_sections(text: str):
+    """
+    Extract abstract-equivalent and conclusions-equivalent sections from
+    a plain text string (e.g. OCR output).  Returns (head_text, tail_text).
+    head_text: first ~3 000 chars (covers title + abstract for most papers).
+    tail_text: text starting from the last occurrence of a conclusions/summary
+               header; None if not found.
+    """
+    import re
+    head = text[:3000]
+
+    # Try to find a conclusions/summary section
+    conc_pat = re.compile(
+        r'(?:^|\n)\s*(?:\d+\.?\s+)?(?:conclusions?|summary|discussion)\b',
+        re.IGNORECASE,
+    )
+    matches = list(conc_pat.finditer(text))
+    if matches:
+        tail = text[matches[-1].start():]
+        # Stop at references / acknowledgements
+        stop_pat = re.compile(
+            r'\n\s*(?:references?|acknowledgements?|appendix)\b', re.IGNORECASE
+        )
+        stop = stop_pat.search(tail)
+        tail = tail[:stop.start()] if stop else tail
+    else:
+        tail = None
+
+    return head, tail
+
+
 def classify_paper(
     pdf_path: str,
     centroid: Optional[np.ndarray] = None,
+    text: Optional[str] = None,
 ) -> ClassificationResult:
     """
     Classify a single PDF through the 3-stage pipeline.
@@ -88,28 +120,34 @@ def classify_paper(
     Args:
         pdf_path: Path to the PDF file.
         centroid: Pre-loaded WUMaCat centroid (loaded from disk if None).
+        text:     Pre-extracted full text (e.g. from OCR).  When supplied the
+                  PDF is not opened for text extraction; the abstract and
+                  conclusions sections are derived from this string instead.
+                  The pdf_type reported in the result will be "ocr".
 
     Returns:
         ClassificationResult with verdict and per-stage details.
     """
-    from src.pdf_utils import detect_pdf_type, extract_abstract, extract_conclusions
     from src.relevance_keywords import score_text
     from src.embeddings import load_centroid, similarity_score
 
     stages: list = []
+    pdf_type_label = "ocr" if text is not None else "text"
 
-    # ── Pre-check: is it a text PDF? ─────────────────────────────────────────
-    try:
-        pdf_info = detect_pdf_type(pdf_path)
-    except FileNotFoundError as e:
-        return ClassificationResult(pdf_path=pdf_path, pdf_type="unknown",
-                                    verdict="uncertain", exit_stage=0,
-                                    error=str(e))
+    # ── Pre-check: is it a text PDF (skip when text is provided)? ────────────
+    if text is None:
+        from src.pdf_utils import detect_pdf_type, extract_abstract, extract_conclusions
+        try:
+            pdf_info = detect_pdf_type(pdf_path)
+        except FileNotFoundError as e:
+            return ClassificationResult(pdf_path=pdf_path, pdf_type="unknown",
+                                        verdict="uncertain", exit_stage=0,
+                                        error=str(e))
 
-    if pdf_info.pdf_type == "image":
-        return ClassificationResult(pdf_path=pdf_path, pdf_type="image",
-                                    verdict="uncertain", exit_stage=0,
-                                    error="Image-based PDF — OCR required before classification")
+        if pdf_info.pdf_type == "image":
+            return ClassificationResult(pdf_path=pdf_path, pdf_type="image",
+                                        verdict="uncertain", exit_stage=0,
+                                        error="Image-based PDF — OCR required before classification")
 
     # Load centroid once
     if centroid is None:
@@ -117,7 +155,10 @@ def classify_paper(
 
     # ── Stage 1: keyword scoring ──────────────────────────────────────────────
     try:
-        abstract_text = extract_abstract(pdf_path)
+        if text is not None:
+            abstract_text, _ = _split_text_sections(text)
+        else:
+            abstract_text = extract_abstract(pdf_path)
         kw_result     = score_text(abstract_text)
         kw_score      = kw_result.score
 
@@ -134,7 +175,7 @@ def classify_paper(
         if kw_score < S1_IRRELEVANT:
             s1 = StageResult(1, kw_score, "not_relevant")
             stages.append(s1)
-            return ClassificationResult(pdf_path, "text", "not_relevant", 1, stages)
+            return ClassificationResult(pdf_path, pdf_type_label, "not_relevant", 1, stages)
 
         stages.append(StageResult(1, kw_score, "borderline"))
 
@@ -149,41 +190,44 @@ def classify_paper(
         if sim2 >= S2_RELEVANT:
             s2 = StageResult(2, sim2, "relevant")
             stages.append(s2)
-            return ClassificationResult(pdf_path, "text", "relevant", 2, stages)
+            return ClassificationResult(pdf_path, pdf_type_label, "relevant", 2, stages)
 
         if sim2 < S2_BORDERLINE:
             s2 = StageResult(2, sim2, "not_relevant")
             stages.append(s2)
-            return ClassificationResult(pdf_path, "text", "not_relevant", 2, stages)
+            return ClassificationResult(pdf_path, pdf_type_label, "not_relevant", 2, stages)
 
         stages.append(StageResult(2, sim2, "borderline"))
 
     except Exception as e:
         stages.append(StageResult(2, 0.0, "not_relevant", note=f"error: {e}"))
-        return ClassificationResult(pdf_path, "text", "not_relevant", 2, stages)
+        return ClassificationResult(pdf_path, pdf_type_label, "not_relevant", 2, stages)
 
     # ── Stage 3: conclusions embedding ───────────────────────────────────────
     try:
-        conclusions = extract_conclusions(pdf_path)
+        if text is not None:
+            _, conclusions = _split_text_sections(text)
+        else:
+            conclusions = extract_conclusions(pdf_path)
 
         if conclusions is None:
             stages.append(StageResult(3, 0.0, "not_relevant",
                                       note="no conclusions found — defaulting to not_relevant"))
-            return ClassificationResult(pdf_path, "text", "not_relevant", 3, stages)
+            return ClassificationResult(pdf_path, pdf_type_label, "not_relevant", 3, stages)
 
         s3_result = similarity_score(conclusions, centroid)
         sim3      = s3_result.similarity
 
         if sim3 >= S3_RELEVANT:
             stages.append(StageResult(3, sim3, "relevant"))
-            return ClassificationResult(pdf_path, "text", "relevant", 3, stages)
+            return ClassificationResult(pdf_path, pdf_type_label, "relevant", 3, stages)
         else:
             stages.append(StageResult(3, sim3, "not_relevant"))
-            return ClassificationResult(pdf_path, "text", "not_relevant", 3, stages)
+            return ClassificationResult(pdf_path, pdf_type_label, "not_relevant", 3, stages)
 
     except Exception as e:
         stages.append(StageResult(3, 0.0, "uncertain", note=f"error: {e}"))
-        return ClassificationResult(pdf_path, "text", "uncertain", 3, stages)
+        return ClassificationResult(pdf_path, pdf_type_label, "uncertain", 3, stages)
 
 
 def classify_all(

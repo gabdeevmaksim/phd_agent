@@ -114,7 +114,8 @@ python -c "from src.ads_parser import download_catalogue_abstracts; download_cat
 - Supported object formats: variable stars (EP Cep), V-number (V369 Cep), NGC members, KIC, TIC, OGLE, 2MASS
 
 **`src/param_extractor.py`** - Regex and table-based parameter extraction:
-- `PARAM_SPECS`: 20 WUMaCat numerical parameters (P, dPdt, q, i, T1, T2, M1, M2, R1, R2, L1, L2, a, Ω, f, r1p, r2p, L3, d, Age)
+- `PARAM_SPECS`: 21 WUMaCat numerical parameters (P, dPdt, q, i, T1, T2, T2_T1, M1, M2, R1, R2, L1, L2, a, Ω, f, r1p, r2p, L3, d, Age)
+  - `T2_T1`: temperature ratio T2/T1; extracted directly when only the ratio is reported; Tier-2: computed from T1+T2; also drives T2 = T1 × T2/T1 when T2 is missing
 - `extract_table_block(text, objects)` → per-object dict of ParamMatch from multi-column parameter tables
 - `extract_params(text)` → dict of List[ParamMatch] from inline regex over full text
 - `extract_categorical(text)` → CategoricalMatch for Type (W/A), ET, Solver (WD/PHOEBE/BM3/NF/WUMA), Spots
@@ -127,11 +128,10 @@ python -c "from src.ads_parser import download_catalogue_abstracts; download_cat
 - Flow: classify → PaperIndex → table_block + inline_regex + semantic_queries → fill_missing → stamp bibcode
 - Auto-detects image PDFs and routes to EasyOCR before extraction
 
-**`src/catalogue.py`** - Multi-paper object catalogue with conflict resolution:
+**`src/catalogue.py`** - Multi-paper object catalogue (flat schema):
 - `ObjectCatalogue.add_paper(pdf_path)` / `add_paper_result(result)` → ingest PaperResult
-- `ObjectCatalogue.to_dataframe()` → one row per object, best value per parameter selected
-- Ranking: table+unc > regex+unc > table > regex > computed; categoricals by majority vote
-- Conflict detection: >3σ or >10% fractional difference → `{param}_conflict=True` column
+- `ObjectCatalogue.to_dataframe()` → flat DataFrame; primary key is **(Name, bibcode)** — one row per object per paper, no merging
+- Conflict detection via `print_conflicts()`: pairwise >3σ or >10% fractional difference across papers for the same object
 
 **`src/wordcloud_utils.py`** - Text mining and visualization utilities:
 - **Text processing**: `clean_text()`, `extract_abstracts()`, `extract_titles()` with configurable stopwords

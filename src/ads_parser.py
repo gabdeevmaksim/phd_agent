@@ -1693,12 +1693,10 @@ def download_pdfs(
         safe_name = bibcode.replace("/", "_").replace(":", "_")
         pdf_path = os.path.join(output_dir, f"{safe_name}.pdf")
 
-        pdf_filename = os.path.basename(pdf_path)
-
         if skip_existing and os.path.exists(pdf_path):
             print(f"[{i}/{total}] ⏭️  Already exists — {bibcode}")
             results["skipped"].append(bibcode)
-            results["pdf_files"][bibcode] = pdf_filename
+            results["pdf_files"][bibcode] = pdf_path   # full path
             continue
 
         # Determine download URL: arXiv preferred, fallback to ADS/publisher
@@ -1726,7 +1724,7 @@ def download_pdfs(
                 size_kb = len(response.content) // 1024
                 print(f"[{i}/{total}] ✅ Downloaded ({size_kb} KB) — {bibcode} [{source_label}]")
                 results["downloaded"].append(bibcode)
-                results["pdf_files"][bibcode] = pdf_filename
+                results["pdf_files"][bibcode] = pdf_path   # full path
             else:
                 print(f"[{i}/{total}] ❌ Not a PDF (status {response.status_code}) — {bibcode} [{source_label}]")
                 results["failed"].append(bibcode)

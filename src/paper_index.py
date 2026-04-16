@@ -62,11 +62,16 @@ _PATTERNS: List[tuple] = [
     ("gsc",     re.compile(r'\bGSC\s+\d{4}[-–]\d{3,5}\b')),
     ("asas",    re.compile(r'\bASAS\s+J\d{6}[+-]\d{4}\.\d\b')),
     ("j_coord", re.compile(r'\bJ\d{4,6}[+-]\d{4,6}\b')),
+    ("1swasp",  re.compile(r'\b1SWASP\s+J\d{6}[\d.]*[+-]\d{4,7}[\d.]*\b')),
+    ("nsvs",    re.compile(r'\bNSVS\s+\d{5,10}\b')),
+    ("asassn",  re.compile(r'\bASASSN[-_]\d{2}[a-z]{2,3}\b', re.IGNORECASE)),
 
-    # Variable stars: 1-2 letter prefix + constellation  (EQ Cep, RW Com, ...)
+    # Variable stars: 1-2 letter prefix + constellation  (EQ Cep, FV CVn, XY LMi, ...)
+    # IAU single-letter designations: R–Z; two-letter: AA–QZ (J excluded).
+    # We allow any 1-2 uppercase letters — the constellation constraint is the
+    # real filter; false positives are caught by _NOT_OBJECTS.
     ("var_star", re.compile(
-        rf'\b(?:A[BCDFGHLMNOPQRSTVWXYZ]|[BEG-RT-WY][A-Z]|[A-Z]{{1}})\s+'
-        rf'(?:{_CONSTELLATIONS})\b'
+        rf'\b[A-Z]{{1,2}}\s+(?:{_CONSTELLATIONS})\b'
     )),
 
     # V-number stars: V369 Cep, V1234 Aql, ...
@@ -91,6 +96,20 @@ _PATTERNS: List[tuple] = [
 _IGNORE = {
     '', 'a', 'b', 'i', 'v', 'the', 'fig', 'table', 'eq', 'and', 'or',
     'et', 'al', 'vs', 'see', 'for', 'from',
+}
+
+# Instrument / software / catalogue abbreviations that look like object names
+# but are never the study target themselves.
+_NOT_OBJECTS: set = {
+    'CCD', 'IRAF', 'PHOT', 'NEW', 'AML', 'MHAR', 'PSMO',
+    'LTT', 'UCAC', 'UCAC4', 'UCAC3', 'UCAC2',
+    'WD', 'BM', 'NF',            # solver names
+    'SAO', 'HIP', 'HD',          # bare catalogue prefixes without numbers
+    'EB', 'CB', 'WUMa', 'RRL',   # class labels
+    'BVRI', 'UBV', 'BV', 'VI',   # photometric bands
+    'AGB', 'RGB', 'MS', 'TO',    # evolutionary stage labels
+    'RA', 'DEC', 'JD', 'HJD',    # coordinate / time keywords
+    'SNR', 'PSF', 'FWHM',        # instrumental terms
 }
 
 # ── Section heading detector ──────────────────────────────────────────────────
@@ -256,12 +275,16 @@ def _extract_table_ids(text: str) -> List[str]:
                 rf'|V\d{{1,4}}\s+(?:{_CONSTELLATIONS})'
                 rf'|KIC\s+\d{{7,10}}'
                 rf'|TIC\s+\d{{6,12}}'
-                rf'|[A-Z0-9]{{3,20}}))\s',
+                rf'|OGLE[-\s][A-Z]{{2,4}}[-\s][A-Z]{{2,4}}[-\s]\d{{4,8}}'
+                rf'|2MASS\s+J\d{{6,8}}[+-]\d{{4,7}}'
+                rf'|GSC\s+\d{{4}}[-–]\d{{3,5}}'
+                rf'|ASAS\s+J\d{{6}}[+-]\d{{4}}\.\d'
+                rf'|[A-Z]{{1,2}}\d{{1,6}}))\s',  # e.g. V776, BX1, but NOT bare CCD/IRAF
                 stripped
             )
             if m:
                 name = m.group(1).strip()
-                if name.lower() not in _IGNORE:
+                if name.lower() not in _IGNORE and name not in _NOT_OBJECTS:
                     ids.append(name)
 
     return ids
@@ -324,6 +347,8 @@ def extract_objects(pdf_path: str, verbose: bool = True,
         if not re.search(r'[A-Za-z]', name):
             continue
         if len(name) < 3 or name.lower() in {'w uma', 'w-uma', 'eb', 'sb', 'lc'}:
+            continue
+        if name in _NOT_OBJECTS:
             continue
         count = len(re.findall(re.escape(name), full_text))
         if count == 0:

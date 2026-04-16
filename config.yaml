@@ -1,0 +1,24 @@
+# Project configuration
+# All paths are relative to the project root
+
+paths:
+  data_dir: data
+  pdf_dir: data/pdfs
+  wumacat_csv: data/WUMaCat.csv
+  wumacat_abstracts: data/wumacat_abstracts.json
+  wumacat_centroid: data/wumacat_centroid.npy
+  wumacat_embed_meta: data/wumacat_embed_meta.json
+  catalogue_csv: data/catalogue.csv
+  extracted_json_dir: data/extracted
+  search_download_table: data/search_download_table.csv
+  similarity_download_table: data/similarity_download_table.csv
+
+extraction:
+  similarity_score_threshold: 100   # min ADS similarity score
+  max_similar_results: 200          # max candidates per similarity search
+  ocr_engine_default: easyocr       # easyocr | nougat
+  nougat_page_timeout: 300          # seconds per page for nougat
+
+pipeline:
+  delay_between_requests: 1.5       # seconds between ADS API calls
+  skip_existing_pdfs: true

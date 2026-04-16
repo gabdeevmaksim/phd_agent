@@ -424,13 +424,18 @@ PARAM_SPECS["Omega"] = ParamSpec(
     queries=["surface potential Omega contact parameter", "dimensionless potential Roche lobe"],
 )
 
-# ── Fill-out factor f (0 – 1) ─────────────────────────────────────────────────
+# ── Fill-out factor f (0 – 1, or 0 – 100 as percent) ─────────────────────────
+# Some papers report f as fraction (0.079) others as percent (7.9 %).
+# We accept up to 100 here; values >1.5 are assumed to be percent and divided
+# by 100 in _normalize_percent_params() called after extraction.
 PARAM_SPECS["f"] = ParamSpec(
     param="f", label="Fill-out factor", unit="",
-    valid_range=(-0.5, 1.5),
+    # 0.001 (0.1%) minimum excludes spurious O-C frequencies and mass functions.
+    # Upper bound 100 accommodates papers that report f as a percent (e.g. 55.5).
+    valid_range=(0.001, 100.0),
     patterns=_compile([
-        # "f = 0.235" or "f = 23.5%"
-        rf'\bf\s*=\s*({_UF}){_UNC}(?:\s*%)?',
+        # "f = 0.235" or "f = 23.5%" — but NOT "f = 0.0000636 cycle d-1" (O-C frequency)
+        rf'\bf\s*=\s*({_UF}){_UNC}(?:\s*%)?(?!\s*cycle)',
         # "fill-out factor f = 0.235"
         rf'fill.?out\s+factor\s+f\s*=\s*({_UF})',
         rf'fill.?out\s+(?:factor\s+)?(?:of\s+|is\s+)?({_UF})',
@@ -517,6 +522,28 @@ PARAM_SPECS["Age"] = ParamSpec(
 )
 
 
+# ── Temperature ratio T2/T1 (dimensionless, 0.3 – 1.1) ───────────────────────
+# Many papers adopt T1 and report only T2/T1 without giving T2 explicitly.
+# This column preserves that information and allows computing T2 when T1 is known.
+PARAM_SPECS["T2_T1"] = ParamSpec(
+    param="T2_T1", label="Temperature ratio T2/T1", unit="",
+    valid_range=(0.3, 1.1),
+    patterns=_compile([
+        # "T2/T1 = 0.984"  or  "T2/T1 = 0.984 ± 0.002"
+        rf'\bT2\s*/\s*T1\s*=\s*({_UF}){_CUNC}',
+        # "temperature ratio T2/T1 = 0.984"
+        rf'temperature\s+ratio\s+T2\s*/\s*T1\s*=\s*({_UF}){_CUNC}',
+        # "T2/T1 = 0.984" without equals (table)
+        rf'\bT2\s*/\s*T1\s+({_UF}){_CUNC}',
+        # "ratio T2/T1 of 0.984"
+        rf'ratio\s+T2\s*/\s*T1\s+(?:of\s+|is\s+)?({_UF})',
+        # Nougat table row: "T2/T1  0.984± 0.002"
+        rf'^T2\s*/\s*T1\s+({_UF}){_CUNC}',
+    ]),
+    queries=["temperature ratio T2/T1 light curve solution"],
+)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Extraction logic
 # ─────────────────────────────────────────────────────────────────────────────
@@ -530,6 +557,21 @@ def _parse_float(s: str) -> Optional[float]:
         return float(s)
     except (ValueError, TypeError):
         return None
+
+
+def _normalize_percent_f(pm: "ParamMatch") -> "ParamMatch":
+    """If fill-out factor was extracted as a percentage (>1.5), convert to fraction."""
+    if pm.param == "f" and pm.value is not None and pm.value > 1.5:
+        pm = ParamMatch(
+            param=pm.param,
+            value=round(pm.value / 100.0, 6),
+            uncertainty=round(pm.uncertainty / 100.0, 6) if pm.uncertainty is not None else None,
+            unit=pm.unit,
+            raw_text=pm.raw_text,
+            source=pm.source,
+            bibcode=pm.bibcode,
+        )
+    return pm
 
 
 def _extract_uncertainty(text: str, value_end: int) -> Optional[float]:
@@ -601,13 +643,16 @@ def extract_params(
                 start = max(0, m.start() - 30)
                 raw_text = text_n[start: m.end() + 20].replace('\n', ' ').strip()
 
-                hits.append(ParamMatch(
+                pm = ParamMatch(
                     param=pname,
                     value=round(val, 6),
                     uncertainty=round(unc, 6) if unc is not None else None,
                     unit=spec.unit,
                     raw_text=raw_text,
-                ))
+                )
+                if pname == "f":
+                    pm = _normalize_percent_f(pm)
+                hits.append(pm)
 
         if hits:
             results[pname] = hits
@@ -686,7 +731,11 @@ _TABLE_PARAM_MAP: List[Tuple[re.Pattern, str]] = [
     (re.compile(r'r1\b(?!\s*[/=(])', re.I),                    'r1p'),
     (re.compile(r'r2\b(?!\s*[/=(])', re.I),                    'r2p'),
     (re.compile(r'L[VRI]?1\s*/\s*\(L[VRI]?1', re.I),          'L1'),
-    (re.compile(r'f\b(?:\s*\(|$)', re.I),                      'f'),
+    # 'f' as a standalone label (fill-out).
+    # Require f NOT preceded by a word char AND NOT followed by '(m' or '(M'
+    # (which would indicate mass function f(m), f(M3), etc.)
+    # Also require label starts with f (handled by _map_table_label len guard + ^).
+    (re.compile(r'(?<!\w)f\b(?!\s*\([mM])(?:\s*[(%]|$)', re.I), 'f'),
     (re.compile(r'M1\s*\(M', re.I),                            'M1'),
     (re.compile(r'M2\s*\(M', re.I),                            'M2'),
     (re.compile(r'R1\s*\(R', re.I),                            'R1'),
@@ -703,7 +752,9 @@ _TABLE_PARAM_MAP: List[Tuple[re.Pattern, str]] = [
 
 _VALUE_LINE_RE = re.compile(
     rf'^(?P<val>[+-]?\s*(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)'
-    rf'(?:\s*[±]\s*(?P<unc>(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?))?'
+    rf'(?P<pct>\s*%)?'                       # optional % suffix (f reported as percent)
+    # uncertainty: "± N", "(N)", "(± N %)" — allow ± inside parens
+    rf'(?:\s*(?:[±]\s*|\(\s*[±]?\s*)(?P<unc>(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)(?:\s*%)?(?:\s*\))?)?'
     rf'\s*$'
 )
 
@@ -711,10 +762,185 @@ _VALUE_LINE_RE = re.compile(
 def _map_table_label(label: str) -> Optional[str]:
     """Return WUMaCat param name for a table row label, or None."""
     label_n = _normalize(label).strip()
+    # Reject long prose lines — real table labels are short (≤ 50 chars)
+    if len(label_n) > 50:
+        return None
     for pat, pname in _TABLE_PARAM_MAP:
         if pat.search(label_n):
             return pname
     return None
+
+
+def extract_vertical_table(text: str) -> Dict[str, ParamMatch]:
+    """
+    Parse a vertical (single-object) parameter table where each row is:
+
+        LABEL          ← parameter name  (e.g. "q", "T1(K)", "r1(pole)")
+        VALUE [UNC]    ← value, possibly with inline uncertainty
+        [± UNC]        ← optional separate uncertainty line
+        [VALUE2 ...]   ← additional solution columns (no-spot / with-spot);
+                          we take the LAST column (most complete solution)
+
+    Returns {param_name: ParamMatch} for the dominant object.
+    This function is called only for single-object papers where no horizontal
+    table header (object names as columns) is found.
+    """
+    text_n = _normalize(text)
+    lines  = text_n.split('\n')
+    n      = len(lines)
+    results: Dict[str, ParamMatch] = {}
+
+    i = 0
+    while i < n:
+        label = lines[i].strip()
+        pname = _map_table_label(label)
+        i += 1
+        if pname is None:
+            continue
+
+        spec = PARAM_SPECS.get(pname)
+        if spec is None:
+            continue
+        lo, hi = spec.valid_range
+
+        # Collect value lines immediately following the label.
+        # Stop at: blank lines, the next label, after 8 lines, or any non-numeric
+        # line longer than 12 chars (unrecognised header like "Σω(O-C)²").
+        val_lines: List[str] = []
+        j = i
+        while j < n and j - i < 8:
+            l = lines[j].strip()
+            if not l:
+                break
+            if _map_table_label(l) is not None:
+                break
+            # Stop on unrecognised non-numeric lines that look like headers:
+            # - longer than 8 chars and not a valid value, or
+            # - starts with a Greek/special char that signals a residuals row (Σ, Δ, ...)
+            if not _VALUE_LINE_RE.match(l) and not l.startswith('±'):
+                if len(l) > 8 or l[:1] in ('Σ', 'Δ', 'Ω', 'χ'):
+                    break
+            val_lines.append(l)
+            j += 1
+
+        # Parse values — take the LAST valid numeric value (= "with spots" column
+        # when multiple solutions are stacked) unless only one exists.
+        last_val: Optional[float]  = None
+        last_unc: Optional[float]  = None
+        last_raw: str              = ""
+
+        for vl in val_lines:
+            m = _VALUE_LINE_RE.match(vl)
+            if m:
+                v = _parse_float(m.group('val').replace(' ', ''))
+                if v is not None:
+                    # If value was given as percent (e.g. "55.5%"), normalise
+                    if m.group('pct') and v > 1.5:
+                        v = v / 100.0
+                    unc_str  = m.group('unc')
+                    unc_v    = _parse_float(unc_str) if unc_str else None
+                    if unc_v is not None and m.group('pct'):
+                        unc_v = unc_v / 100.0
+                    if lo <= v <= hi:
+                        last_val = v
+                        last_raw = vl
+                        last_unc = unc_v
+            elif vl.startswith('±') or vl.startswith('+/-'):
+                # Stand-alone uncertainty line
+                u = _parse_float(vl.lstrip('±+/-').strip())
+                if u is not None:
+                    last_unc = u
+
+        if last_val is not None and pname not in results:
+            pm = ParamMatch(
+                param=pname,
+                value=round(last_val, 6),
+                uncertainty=round(last_unc, 6) if last_unc is not None else None,
+                unit=spec.unit,
+                raw_text=last_raw,
+                source=SOURCE_TABLE,
+            )
+            if pname == "f":
+                pm = _normalize_percent_f(pm)
+            results[pname] = pm
+
+    return results
+
+
+def extract_attributed_params(
+    text: str,
+    objects: List[str],
+) -> Dict[str, Dict[str, ParamMatch]]:
+    """
+    Extract parameter values that are explicitly attributed to a named object
+    in inline prose, e.g.:
+        "q = 1.153 and f = 13.4% for FP Lyn"
+        "mass ratio of q = 0.536 for BL Eri"
+
+    Returns {object_name: {param_name: ParamMatch}}.
+    Only parameters whose values appear within ~120 chars of the object name
+    are captured.
+    """
+    text_n   = _normalize(text)
+    results: Dict[str, Dict[str, ParamMatch]] = {}
+    if not objects:
+        return results
+
+    # Build a combined object pattern (longest names first to avoid partial matches)
+    sorted_objs = sorted(objects, key=len, reverse=True)
+    obj_pat = re.compile(
+        r'(?:' + '|'.join(re.escape(o) for o in sorted_objs) + r')',
+        re.IGNORECASE,
+    )
+
+    for m_obj in obj_pat.finditer(text_n):
+        obj_name = next(
+            (o for o in sorted_objs
+             if m_obj.group(0).lower() == o.lower()),
+            m_obj.group(0),
+        )
+        # Window: 120 chars before the object mention
+        window_start = max(0, m_obj.start() - 120)
+        window       = text_n[window_start: m_obj.start()]
+
+        for pname, spec in PARAM_SPECS.items():
+            if obj_name in results and pname in results[obj_name]:
+                continue   # already have a value
+            lo, hi = spec.valid_range
+            for pat in spec.patterns:
+                # Collect all matches, take the LAST one (closest to object name)
+                all_matches = [
+                    mp for mp in pat.finditer(window)
+                    if _parse_float(mp.group(1)) is not None
+                    and lo <= (_parse_float(mp.group(1)) or -1e9) <= hi
+                ]
+                if not all_matches:
+                    continue
+                mp = all_matches[-1]   # last = closest to the object name
+                val = _parse_float(mp.group(1))
+                unc = None
+                for g in range(2, (mp.lastindex or 0) + 1):
+                    try:
+                        us = mp.group(g)
+                    except IndexError:
+                        continue
+                    if us:
+                        unc = _parse_float(us.strip(' ±()'))
+                        break
+                pm = ParamMatch(
+                    param=pname,
+                    value=round(val, 6),
+                    uncertainty=round(unc, 6) if unc is not None else None,
+                    unit=spec.unit,
+                    raw_text=mp.group(0),
+                    source=SOURCE_REGEX,
+                )
+                if pname == "f":
+                    pm = _normalize_percent_f(pm)
+                results.setdefault(obj_name, {})[pname] = pm
+                break   # first pattern that gives a hit is enough
+
+    return results
 
 
 def extract_table_block(
@@ -812,7 +1038,7 @@ def extract_table_block(
                         _, obj = col_positions[col_idx]
                         unc_str = m.group('unc')
                         unc = _parse_float(unc_str) if unc_str else None
-                        results[obj][pname] = ParamMatch(
+                        pm = ParamMatch(
                             param=pname,
                             value=round(val, 6),
                             uncertainty=round(unc, 6) if unc is not None else None,
@@ -820,6 +1046,9 @@ def extract_table_block(
                             raw_text=val_line,
                             source=SOURCE_TABLE,
                         )
+                        if pname == "f":
+                            pm = _normalize_percent_f(pm)
+                        results[obj][pname] = pm
                 col_idx += 1
                 values_collected += 1
                 i += 1
@@ -1089,6 +1318,26 @@ def fill_missing(
             filled[pname] = bv
         # else: will be filled in steps 2/3
 
+    # ── Step 1b: normalise q convention ──────────────────────────────────────
+    # WUMaCat defines q = M_less / M_more ≤ 1.  Many papers define q = M2/M1
+    # where M2 > M1, giving q > 1.  Invert so both conventions map to q ≤ 1.
+    q_pm = filled.get("q")
+    if q_pm is not None and not q_pm.is_missing and q_pm.value > 1.0:
+        inv_val = round(1.0 / q_pm.value, 6)
+        inv_unc = (
+            round(q_pm.uncertainty / (q_pm.value ** 2), 6)
+            if q_pm.uncertainty is not None else None
+        )
+        filled["q"] = ParamMatch(
+            param="q",
+            value=inv_val,
+            uncertainty=inv_unc,
+            unit=q_pm.unit,
+            raw_text=f"1/{q_pm.raw_text} (inverted q>1)",
+            source=q_pm.source,
+            bibcode=q_pm.bibcode,
+        )
+
     # ── Step 2: compute from other parameters ────────────────────────────────
 
     def _get(name: str) -> Optional[float]:
@@ -1125,9 +1374,18 @@ def fill_missing(
     if a and r2p:
         _put_computed('R2', a * r2p, f"R2 = r2p * a = {r2p} * {a}")
 
+    # T2_T1 — compute from T1 and T2 when both are available
+    T1, T2 = _get('T1'), _get('T2')
+    if T1 and T2:
+        _put_computed('T2_T1', T2 / T1, f"T2/T1 = {T2}/{T1}")
+    # T2 — derive from T1 and T2_T1 ratio when T2 is missing
+    T2_T1_ratio = _get('T2_T1')
+    if T1 and T2_T1_ratio and not _get('T2'):
+        _put_computed('T2', T1 * T2_T1_ratio, f"T2 = T1 * T2/T1 = {T1} * {T2_T1_ratio}")
+        T2 = _get('T2')  # update for L2 computation below
+
     # L1, L2 from Stefan-Boltzmann: L = (R/R_sun)^2 * (T/T_sun)^4
     R1, R2 = _get('R1'), _get('R2')
-    T1, T2 = _get('T1'), _get('T2')
     if R1 and T1:
         _put_computed('L1', _stefan_boltzmann_L(R1, T1),
                       f"SB: R1={R1} R_sun, T1={T1} K")
