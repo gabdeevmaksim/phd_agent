@@ -1520,42 +1520,178 @@ def _extract_arxiv_id(identifiers: List[str]) -> Optional[str]:
     return None
 
 
-def _get_fallback_pdf_url(bibcode: str, headers: Dict[str, str]) -> Optional[tuple]:
+def _get_fallback_pdf_url(
+    bibcode: str,
+    headers: Dict[str, str],
+    doi: Optional[str] = None,
+) -> Optional[tuple]:
     """
-    Query the ADS resolver for a freely accessible PDF URL when no arXiv ID exists.
+    Multi-tier fallback PDF search for papers not on arXiv.
 
-    Tries sources in priority order:
-        ADS_PDF  > ADS_SCAN  > PUB_PDF  (PUB_PDF last — often paywalled)
+    Tier 1 — ADS resolver  : ADS_PDF > ADS_SCAN > collect HTML links
+    Tier 2 — Unpaywall     : best OA PDF given a DOI (free API, no key needed)
+    Tier 3 — HTML scrape   : try EPRINT_HTML / PUB_HTML pages for a PDF link
+    Tier 4 — Journal rules : bibcode → direct URL for RAA, PASJ, A&A, etc.
 
     Returns:
-        (url, source_type) tuple, or None if nothing found.
+        (url, source_label) tuple, or None if every tier fails.
     """
+    import re
+
+    html_candidates: List[str] = []   # collect HTML pages for Tier 3
+
+    # ── Tier 1: ADS resolver ─────────────────────────────────────────────────
     try:
-        response = requests.get(
+        resp = requests.get(
             f"{ADS_API_BASE_URL}/resolver/{bibcode}/esource",
-            headers=headers,
-            timeout=15,
+            headers=headers, timeout=15,
         )
-        if response.status_code != 200:
-            return None
+        if resp.status_code == 200:
+            records = resp.json().get("links", {}).get("records", [])
+            direct = {}
+            for rec in records:
+                lt  = rec.get("link_type", "")
+                url = rec.get("url", "")
+                if "ADS_PDF"  in lt and "ADS_PDF"  not in direct:
+                    direct["ADS_PDF"]  = url
+                if "ADS_SCAN" in lt and "ADS_SCAN" not in direct:
+                    direct["ADS_SCAN"] = url
+                if "PUB_PDF"  in lt and "PUB_PDF"  not in direct:
+                    direct["PUB_PDF"]  = url
+                # Collect HTML pages for Tier 3
+                if "HTML" in lt or "PUB_HTML" in lt or "EPRINT_HTML" in lt:
+                    html_candidates.append(url)
+                # Pick up DOI if caller didn't supply one
+                if not doi and "DOI" in lt and url.startswith("http"):
+                    m = re.search(r"10\.\d{4,}/\S+", url)
+                    if m:
+                        doi = m.group(0).rstrip(".")
 
-        records = response.json().get("links", {}).get("records", [])
-        priority = ["ADS_PDF", "ADS_SCAN", "PUB_PDF"]
-        candidates: Dict[str, str] = {}
-
-        for rec in records:
-            link_type = rec.get("link_type", "")
-            url = rec.get("url", "")
-            for src in priority:
-                if src in link_type and src not in candidates:
-                    candidates[src] = url
-
-        for src in priority:
-            if src in candidates:
-                return candidates[src], src
-
+            for src in ["ADS_PDF", "ADS_SCAN"]:
+                if src in direct:
+                    return direct[src], src
     except requests.exceptions.RequestException:
         pass
+
+    # ── Tier 2: Unpaywall ────────────────────────────────────────────────────
+    # Prefer repository (arXiv / institutional) PDFs — they are direct downloads.
+    # Publisher "pdf" URLs from Unpaywall often return HTML wrappers, not raw PDFs.
+    if doi:
+        try:
+            uw_url = f"https://api.unpaywall.org/v2/{doi}?email=phd_agent@astro.user"
+            uw = requests.get(uw_url, timeout=15)
+            if uw.status_code == 200:
+                data = uw.json()
+                locations = data.get("oa_locations", [])
+                # Pass 1: repository locations (arXiv, institutional) with pdf URL
+                for loc in locations:
+                    if loc.get("host_type") == "repository":
+                        pdf_url = loc.get("url_for_pdf")
+                        if pdf_url:
+                            return pdf_url, "unpaywall_repo"
+                # Pass 2: best_oa_location regardless of host type
+                best = data.get("best_oa_location") or {}
+                pdf_url = best.get("url_for_pdf")
+                if pdf_url:
+                    # Queue publisher HTML pages for Tier 3 scraping instead
+                    if best.get("host_type") == "publisher":
+                        html_candidates.insert(0, pdf_url)
+                    else:
+                        return pdf_url, "unpaywall"
+                # Pass 3: any location with pdf URL (publisher last resort)
+                for loc in locations:
+                    pdf_url = loc.get("url_for_pdf")
+                    if pdf_url and pdf_url not in html_candidates:
+                        html_candidates.append(pdf_url)
+        except requests.exceptions.RequestException:
+            pass
+
+    # ── Tier 3: HTML page scrape ─────────────────────────────────────────────
+    # ADS PUB_HTML / EPRINT_HTML / Unpaywall publisher pages may contain a
+    # direct PDF download link hidden in the HTML.
+    _pdf_link_re = re.compile(
+        r'href=["\']([^"\']+\.pdf(?:\?[^"\']*)?)["\']',
+        re.IGNORECASE,
+    )
+    from urllib.parse import urlparse, urljoin
+
+    for page_url in html_candidates[:4]:   # try at most 4 HTML pages
+        try:
+            r = requests.get(
+                page_url,
+                headers={"User-Agent": "Mozilla/5.0 (compatible; phd_agent/1.0)"},
+                timeout=20,
+                allow_redirects=True,
+            )
+            if r.status_code != 200:
+                continue
+            # If the response is already a PDF, return immediately
+            if r.content[:4] == b"%PDF":
+                return page_url, "html_scrape_direct"
+            # Look for explicit .pdf hrefs
+            for m in _pdf_link_re.finditer(r.text):
+                href = m.group(1)
+                abs_url = urljoin(page_url, href)
+                return abs_url, "html_scrape"
+            # IOPScience: PDF is served at the article URL with Accept: application/pdf
+            if "iopscience.iop.org" in page_url and doi:
+                iop_pdf = f"https://iopscience.iop.org/article/{doi}/pdf"
+                # Try fetching with PDF accept header
+                rp = requests.get(
+                    iop_pdf,
+                    headers={
+                        "User-Agent": "Mozilla/5.0 (compatible; phd_agent/1.0)",
+                        "Accept": "application/pdf",
+                    },
+                    timeout=20, allow_redirects=True,
+                )
+                if rp.status_code == 200 and rp.content[:4] == b"%PDF":
+                    return iop_pdf, "iopscience"
+            # RAA: article page contains a direct download button
+            raa = re.search(r'(/raa/exportpdf[^"\']+)', r.text)
+            if raa:
+                return f"http://www.raa-journal.org{raa.group(1)}", "raa_html"
+        except requests.exceptions.RequestException:
+            pass
+
+    # ── Tier 4: Journal-specific URL rules ───────────────────────────────────
+    # Bibcode format: YYYYJJJJJVVVVMPPPPa
+    # We derive direct OA URLs for journals that publish freely without arXiv.
+
+    # RAA  (2001–present)  e.g. 2018RAA....18...30Z
+    m = re.match(r"(\d{4})RAA\.+(\d+)\.+(\d+)", bibcode)
+    if m:
+        year, vol, page = m.group(1), m.group(2).lstrip("."), m.group(3).lstrip(".")
+        raa_url = (
+            f"http://www.raa-journal.org/raa/article/viewFile/"
+            f"{vol}/{page.zfill(3)}/pdf"
+        )
+        return raa_url, "raa_direct"
+
+    # PASJ (J-Stage open access)  e.g. 2013PASJ...65....1P
+    m = re.match(r"(\d{4})PASJ\.+(\d+)\.+(\d+)", bibcode)
+    if m:
+        year, vol, page = m.group(1), m.group(2).lstrip("."), m.group(3).lstrip(".")
+        pasj_url = (
+            f"https://academic.oup.com/pasj/article-pdf/"
+            f"{vol}/{page}/pasj_vol{vol}_issue{page}.pdf"
+        )
+        return pasj_url, "pasj_oup"
+
+    # AJ / ApJ — AAS journals, some OA via IOPscience
+    if doi:
+        for pattern, label in [
+            (r"10\.3847/", "iopscience"),
+            (r"10\.1086/",  "iopscience"),
+        ]:
+            if re.match(pattern, doi):
+                iop_url = f"https://iopscience.iop.org/article/{doi}/pdf"
+                return iop_url, label
+
+    # A&A — EDP Sciences, DOI-based PDF
+    if doi and re.match(r"10\.1051/", doi):
+        aa_url = f"https://www.aanda.org/articles/aa/pdf/{doi.replace('10.1051/', '').replace('/', '/')}"
+        return aa_url, "aanda"
 
     return None
 
@@ -1613,11 +1749,14 @@ def download_pdfs(
     skip_existing: bool = True,
 ) -> Dict:
     """
-    Download PDF files for a list of bibcodes using arXiv as primary source.
+    Download PDF files for a list of bibcodes using a multi-tier source chain.
 
-    Fetches the arXiv identifier for each bibcode via the ADS API, then
-    downloads the PDF directly from arxiv.org.  Papers without an arXiv
-    preprint are skipped and reported separately.
+    Source priority for each paper:
+        1. arXiv          — direct PDF from arxiv.org (fastest, most reliable)
+        2. ADS resolver   — ADS_PDF or ADS_SCAN hosted by NASA ADS
+        3. Unpaywall      — best open-access PDF found via DOI (covers most journals)
+        4. HTML scrape    — extract PDF link from publisher / ADS HTML page
+        5. Journal rules  — direct URL patterns for RAA, PASJ, A&A, AJ/ApJ
 
     Args:
         bibcodes: List of ADS bibcodes to download.
@@ -1631,7 +1770,7 @@ def download_pdfs(
             skipped     – list of bibcodes skipped (file already existed)
             no_source   – list of bibcodes with no accessible PDF source
             failed      – list of bibcodes where the download failed
-            pdf_files   – dict mapping bibcode -> pdf filename (downloaded + skipped)
+            pdf_files   – dict mapping bibcode -> full pdf path (downloaded + skipped)
     """
     if not ADS_API_TOKEN:
         print("❌ Error: ADS_API_TOKEN not found in environment variables")
@@ -1653,9 +1792,10 @@ def download_pdfs(
     print(f"📂 Output directory: {output_dir}")
     print()
 
-    # --- Step 1: fetch arXiv identifiers from ADS in batches ---
+    # --- Step 1: fetch arXiv identifiers and DOIs from ADS in batches ---
     batch_size = 100
-    arxiv_map: Dict[str, str] = {}  # bibcode -> arXiv ID
+    arxiv_map: Dict[str, str] = {}   # bibcode -> arXiv ID
+    doi_map:   Dict[str, str] = {}   # bibcode -> DOI
 
     for batch_start in range(0, total, batch_size):
         batch = bibcodes[batch_start : batch_start + batch_size]
@@ -1663,7 +1803,7 @@ def download_pdfs(
 
         params = {
             "q": bibcode_query,
-            "fl": "bibcode,identifier",
+            "fl": "bibcode,identifier,doi",
             "rows": len(batch),
         }
 
@@ -1677,13 +1817,17 @@ def download_pdfs(
 
         docs = response.json().get("response", {}).get("docs", [])
         for doc in docs:
-            bibcode = doc.get("bibcode", "")
+            bib         = doc.get("bibcode", "")
             identifiers = doc.get("identifier", [])
-            arxiv_id = _extract_arxiv_id(identifiers)
+            doi_list    = doc.get("doi", [])
+            arxiv_id    = _extract_arxiv_id(identifiers)
             if arxiv_id:
-                arxiv_map[bibcode] = arxiv_id
+                arxiv_map[bib] = arxiv_id
+            if doi_list:
+                doi_map[bib] = doi_list[0]   # take first DOI
 
-    print(f"📋 arXiv IDs found: {len(arxiv_map)}/{total}")
+    print(f"📋 arXiv IDs found : {len(arxiv_map)}/{total}")
+    print(f"📋 DOIs found      : {len(doi_map)}/{total}")
     print()
 
     # --- Step 2: download PDFs from arxiv.org ---
@@ -1699,19 +1843,18 @@ def download_pdfs(
             results["pdf_files"][bibcode] = pdf_path   # full path
             continue
 
-        # Determine download URL: arXiv preferred, fallback to ADS/publisher
+        # Determine download URL: arXiv preferred, multi-tier fallback otherwise
         if arxiv_id:
             url = f"https://arxiv.org/pdf/{arxiv_id}"
             source_label = f"arXiv:{arxiv_id}"
         else:
-            fallback = _get_fallback_pdf_url(bibcode, headers)
+            fallback = _get_fallback_pdf_url(bibcode, headers, doi=doi_map.get(bibcode))
             if fallback is None:
                 print(f"[{i}/{total}] ⚠️  No PDF source found — {bibcode}")
                 results["no_source"].append(bibcode)
                 time.sleep(delay_between_requests)
                 continue
-            url, source_type = fallback
-            source_label = source_type
+            url, source_label = fallback
 
         try:
             response = requests.get(url, timeout=60,
