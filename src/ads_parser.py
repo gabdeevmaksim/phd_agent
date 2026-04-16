@@ -1520,25 +1520,141 @@ def _extract_arxiv_id(identifiers: List[str]) -> Optional[str]:
     return None
 
 
+def _try_raa_mirror(
+    doi: str,
+    vol: Optional[str] = None,
+    issue: Optional[str] = None,
+) -> Optional[str]:
+    """
+    Scrape raa-journal.org to find the PDF for an RAA paper.
+
+    The RAA journal mirror at raa-journal.org does not use Radware bot protection
+    and serves PDFs directly.  Issue pages list article HTML files; each article
+    HTML page contains the DOI and a link to the PDF.
+
+    Args:
+        doi:   Full DOI string, e.g. '10.1088/1674-4527/21/2/41'
+               or new-format '10.1088/1674-4527/ac9781'.
+        vol:   Volume number string (if known from ADS metadata).
+        issue: Issue number string (if known from ADS metadata).
+
+    Returns:
+        Direct PDF URL on raa-journal.org, or None if not found.
+    """
+    import re
+    from urllib.parse import urljoin
+
+    if not doi or "1674-4527" not in doi:
+        return None
+
+    # Derive vol/issue from DOI if not supplied (old format: .../vol/issue/art)
+    if not vol or not issue:
+        m = re.match(r"10\.1088/1674-4527/(\d+)/(\d+)/(\w+)", doi)
+        if m:
+            vol   = m.group(1)
+            issue = m.group(2)
+        else:
+            return None   # new-format DOI without metadata — can't resolve
+
+    year = 2000 + int(vol)
+    issue_url = (
+        f"http://www.raa-journal.org/issues/all/{year}/v{vol}n{issue}/"
+    )
+
+    try:
+        r = requests.get(
+            issue_url, timeout=15,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; phd_agent/1.0)"},
+        )
+        if r.status_code != 200:
+            return None
+    except requests.exceptions.RequestException:
+        return None
+
+    # Collect article HTML links from the issue page
+    art_links = re.findall(
+        r'href=["\'](\./[^"\']+\.html)["\'\s>]', r.text
+    )
+
+    # Normalise the target DOI for comparison (strip double-slashes, trailing dots)
+    doi_norm = re.sub(r"/+", "/", doi).rstrip(".")
+
+    for art_link in art_links:
+        # Resolve relative → absolute
+        art_url = urljoin(issue_url, art_link.lstrip("./"))
+        if not art_url.startswith("http"):
+            art_url = issue_url + art_link.lstrip("./")
+
+        try:
+            ra = requests.get(
+                art_url, timeout=10,
+                headers={"User-Agent": "Mozilla/5.0 (compatible; phd_agent/1.0)"},
+            )
+            if ra.status_code != 200:
+                continue
+        except requests.exceptions.RequestException:
+            continue
+
+        # Check if this article's DOI matches
+        dois_found = re.findall(r"10\.1088/1674-4527/[\w/]+", ra.text)
+        dois_norm  = [re.sub(r"/+", "/", d).rstrip(".") for d in dois_found]
+        if doi_norm not in dois_norm:
+            continue
+
+        # Extract the PDF link (prefer full URLs, fall back to relative)
+        pdf_links = re.findall(r'href=["\']([^"\']+\.pdf)["\'\s>]', ra.text)
+        if not pdf_links:
+            continue
+
+        # Prefer full https:// URL from raa-journal.org; fall back to relative
+        for href in pdf_links:
+            if href.startswith("https://www.raa-journal.org") or href.startswith("http://www.raa-journal.org"):
+                return href
+        # Relative link — resolve against article URL
+        rel = pdf_links[0]
+        return urljoin(art_url, rel)
+
+    return None
+
+
 def _get_fallback_pdf_url(
     bibcode: str,
     headers: Dict[str, str],
     doi: Optional[str] = None,
+    vol: Optional[str] = None,
+    issue: Optional[str] = None,
 ) -> Optional[tuple]:
     """
     Multi-tier fallback PDF search for papers not on arXiv.
 
+    Tier 0 — RAA mirror    : scrape raa-journal.org (bypasses IOPScience Radware)
     Tier 1 — ADS resolver  : ADS_PDF > ADS_SCAN > collect HTML links
     Tier 2 — Unpaywall     : best OA PDF given a DOI (free API, no key needed)
     Tier 3 — HTML scrape   : try EPRINT_HTML / PUB_HTML pages for a PDF link
-    Tier 4 — Journal rules : bibcode → direct URL for RAA, PASJ, A&A, etc.
+    Tier 4 — Journal rules : bibcode → direct URL for A&A, etc.
 
     Returns:
-        (url, source_label) tuple, or None if every tier fails.
+        (url, source_label) tuple where source_label may be:
+            "raa_mirror"         — PDF on raa-journal.org
+            "ads_pdf" / "ads_scan" — ADS-hosted copy
+            "unpaywall_repo"     — OA repo (arXiv / institutional)
+            "unpaywall"          — Other OA location
+            "html_scrape_direct" / "html_scrape" — PDF found by scraping
+            "aanda"              — A&A EDP Sciences direct
+            "bot_protected"      — URL exists but iopscience.iop.org blocks bots
+            "paywalled"          — Paper is behind a paywall; cannot download
+        Returns None if no source can be found.
     """
     import re
+    from urllib.parse import urljoin
 
     html_candidates: List[str] = []   # collect HTML pages for Tier 3
+
+    # ── Tier 0: RAA mirror (bypasses Radware on iopscience.iop.org) ──────────
+    if doi and "1674-4527" in doi:
+        raa_pdf = _try_raa_mirror(doi, vol=vol, issue=issue)
+        if raa_pdf:
+            return raa_pdf, "raa_mirror"
 
     # ── Tier 1: ADS resolver ─────────────────────────────────────────────────
     try:
@@ -1609,13 +1725,16 @@ def _get_fallback_pdf_url(
     # ── Tier 3: HTML page scrape ─────────────────────────────────────────────
     # ADS PUB_HTML / EPRINT_HTML / Unpaywall publisher pages may contain a
     # direct PDF download link hidden in the HTML.
+    # Skip IOPScience pages — they redirect to Radware bot protection.
     _pdf_link_re = re.compile(
         r'href=["\']([^"\']+\.pdf(?:\?[^"\']*)?)["\']',
         re.IGNORECASE,
     )
-    from urllib.parse import urlparse, urljoin
+    from urllib.parse import urlparse
 
     for page_url in html_candidates[:4]:   # try at most 4 HTML pages
+        if "iopscience.iop.org" in page_url:
+            continue   # Radware blocks all automated requests
         try:
             r = requests.get(
                 page_url,
@@ -1633,65 +1752,28 @@ def _get_fallback_pdf_url(
                 href = m.group(1)
                 abs_url = urljoin(page_url, href)
                 return abs_url, "html_scrape"
-            # IOPScience: PDF is served at the article URL with Accept: application/pdf
-            if "iopscience.iop.org" in page_url and doi:
-                iop_pdf = f"https://iopscience.iop.org/article/{doi}/pdf"
-                # Try fetching with PDF accept header
-                rp = requests.get(
-                    iop_pdf,
-                    headers={
-                        "User-Agent": "Mozilla/5.0 (compatible; phd_agent/1.0)",
-                        "Accept": "application/pdf",
-                    },
-                    timeout=20, allow_redirects=True,
-                )
-                if rp.status_code == 200 and rp.content[:4] == b"%PDF":
-                    return iop_pdf, "iopscience"
-            # RAA: article page contains a direct download button
-            raa = re.search(r'(/raa/exportpdf[^"\']+)', r.text)
-            if raa:
-                return f"http://www.raa-journal.org{raa.group(1)}", "raa_html"
         except requests.exceptions.RequestException:
             pass
 
     # ── Tier 4: Journal-specific URL rules ───────────────────────────────────
-    # Bibcode format: YYYYJJJJJVVVVMPPPPa
-    # We derive direct OA URLs for journals that publish freely without arXiv.
 
-    # RAA  (2001–present)  e.g. 2018RAA....18...30Z
-    m = re.match(r"(\d{4})RAA\.+(\d+)\.+(\d+)", bibcode)
-    if m:
-        year, vol, page = m.group(1), m.group(2).lstrip("."), m.group(3).lstrip(".")
-        raa_url = (
-            f"http://www.raa-journal.org/raa/article/viewFile/"
-            f"{vol}/{page.zfill(3)}/pdf"
-        )
-        return raa_url, "raa_direct"
-
-    # PASJ (J-Stage open access)  e.g. 2013PASJ...65....1P
-    m = re.match(r"(\d{4})PASJ\.+(\d+)\.+(\d+)", bibcode)
-    if m:
-        year, vol, page = m.group(1), m.group(2).lstrip("."), m.group(3).lstrip(".")
-        pasj_url = (
-            f"https://academic.oup.com/pasj/article-pdf/"
-            f"{vol}/{page}/pasj_vol{vol}_issue{page}.pdf"
-        )
-        return pasj_url, "pasj_oup"
-
-    # AJ / ApJ — AAS journals, some OA via IOPscience
-    if doi:
-        for pattern, label in [
-            (r"10\.3847/", "iopscience"),
-            (r"10\.1086/",  "iopscience"),
-        ]:
-            if re.match(pattern, doi):
-                iop_url = f"https://iopscience.iop.org/article/{doi}/pdf"
-                return iop_url, label
-
-    # A&A — EDP Sciences, DOI-based PDF
+    # A&A — EDP Sciences, DOI-based PDF (no bot protection)
     if doi and re.match(r"10\.1051/", doi):
-        aa_url = f"https://www.aanda.org/articles/aa/pdf/{doi.replace('10.1051/', '').replace('/', '/')}"
+        aa_url = (
+            f"https://www.aanda.org/articles/aa/pdf/"
+            + doi.replace("10.1051/", "").replace("/", "/")
+        )
         return aa_url, "aanda"
+
+    # ── Final: classify inaccessible papers for clear reporting ──────────────
+    if doi:
+        # IOPScience papers (AJ, ApJ, ApJS, PASP, old AAS 10.1086/) — Radware protected
+        if re.match(r"10\.(3847|1086|1088)/", doi) and "1674-4527" not in doi:
+            iop_url = f"https://iopscience.iop.org/article/{doi}/pdf"
+            return iop_url, "bot_protected"
+        # MNRAS / NewA (Elsevier) / PASJ (Oxford) — paywalled
+        if re.match(r"10\.(1093/(mnras|pasj)|1016/j\.)", doi):
+            return f"https://doi.org/{doi}", "paywalled"
 
     return None
 
@@ -1766,11 +1848,13 @@ def download_pdfs(
 
     Returns:
         dict with keys:
-            downloaded  – list of bibcodes successfully saved
-            skipped     – list of bibcodes skipped (file already existed)
-            no_source   – list of bibcodes with no accessible PDF source
-            failed      – list of bibcodes where the download failed
-            pdf_files   – dict mapping bibcode -> full pdf path (downloaded + skipped)
+            downloaded    – list of bibcodes successfully saved
+            skipped       – list of bibcodes skipped (file already existed)
+            no_source     – list of bibcodes with no known PDF source
+            failed        – list of bibcodes where the download attempt failed
+            bot_protected – list of bibcodes on IOPScience (Radware blocks bots)
+            paywalled     – list of bibcodes behind a paywall (MNRAS, NewA, etc.)
+            pdf_files     – dict mapping bibcode -> full pdf path (downloaded + skipped)
     """
     if not ADS_API_TOKEN:
         print("❌ Error: ADS_API_TOKEN not found in environment variables")
@@ -1779,11 +1863,13 @@ def download_pdfs(
     os.makedirs(output_dir, exist_ok=True)
 
     results: Dict = {
-        "downloaded": [],
-        "skipped": [],
-        "no_source": [],
-        "failed": [],
-        "pdf_files": {},   # bibcode -> pdf filename
+        "downloaded":    [],
+        "skipped":       [],
+        "no_source":     [],
+        "failed":        [],
+        "bot_protected": [],
+        "paywalled":     [],
+        "pdf_files":     {},   # bibcode -> pdf path
     }
 
     headers = get_ads_headers()
@@ -1792,18 +1878,20 @@ def download_pdfs(
     print(f"📂 Output directory: {output_dir}")
     print()
 
-    # --- Step 1: fetch arXiv identifiers and DOIs from ADS in batches ---
+    # --- Step 1: fetch arXiv IDs, DOIs, and volume/issue metadata ---
     batch_size = 100
     arxiv_map: Dict[str, str] = {}   # bibcode -> arXiv ID
     doi_map:   Dict[str, str] = {}   # bibcode -> DOI
+    vol_map:   Dict[str, str] = {}   # bibcode -> volume
+    issue_map: Dict[str, str] = {}   # bibcode -> issue
 
     for batch_start in range(0, total, batch_size):
         batch = bibcodes[batch_start : batch_start + batch_size]
         bibcode_query = " OR ".join(f"bibcode:{b}" for b in batch)
 
         params = {
-            "q": bibcode_query,
-            "fl": "bibcode,identifier,doi",
+            "q":    bibcode_query,
+            "fl":   "bibcode,identifier,doi,volume,issue",
             "rows": len(batch),
         }
 
@@ -1824,13 +1912,17 @@ def download_pdfs(
             if arxiv_id:
                 arxiv_map[bib] = arxiv_id
             if doi_list:
-                doi_map[bib] = doi_list[0]   # take first DOI
+                doi_map[bib] = doi_list[0]
+            if doc.get("volume"):
+                vol_map[bib] = str(doc["volume"])
+            if doc.get("issue"):
+                issue_map[bib] = str(doc["issue"])
 
     print(f"📋 arXiv IDs found : {len(arxiv_map)}/{total}")
     print(f"📋 DOIs found      : {len(doi_map)}/{total}")
     print()
 
-    # --- Step 2: download PDFs from arxiv.org ---
+    # --- Step 2: download PDFs ---
     for i, bibcode in enumerate(bibcodes, 1):
         arxiv_id = arxiv_map.get(bibcode)
 
@@ -1840,7 +1932,7 @@ def download_pdfs(
         if skip_existing and os.path.exists(pdf_path):
             print(f"[{i}/{total}] ⏭️  Already exists — {bibcode}")
             results["skipped"].append(bibcode)
-            results["pdf_files"][bibcode] = pdf_path   # full path
+            results["pdf_files"][bibcode] = pdf_path
             continue
 
         # Determine download URL: arXiv preferred, multi-tier fallback otherwise
@@ -1848,28 +1940,47 @@ def download_pdfs(
             url = f"https://arxiv.org/pdf/{arxiv_id}"
             source_label = f"arXiv:{arxiv_id}"
         else:
-            fallback = _get_fallback_pdf_url(bibcode, headers, doi=doi_map.get(bibcode))
+            fallback = _get_fallback_pdf_url(
+                bibcode, headers,
+                doi=doi_map.get(bibcode),
+                vol=vol_map.get(bibcode),
+                issue=issue_map.get(bibcode),
+            )
             if fallback is None:
-                print(f"[{i}/{total}] ⚠️  No PDF source found — {bibcode}")
+                print(f"[{i}/{total}] ⚠️  No source — {bibcode}")
                 results["no_source"].append(bibcode)
                 time.sleep(delay_between_requests)
                 continue
             url, source_label = fallback
 
+            # Handle papers that are inaccessible without attempting a download
+            if source_label == "bot_protected":
+                print(f"[{i}/{total}] 🤖 Bot-protected (IOPScience/Radware) — {bibcode}")
+                results["bot_protected"].append(bibcode)
+                time.sleep(0.5)
+                continue
+            if source_label == "paywalled":
+                print(f"[{i}/{total}] 🔒 Paywalled — {bibcode}")
+                results["paywalled"].append(bibcode)
+                time.sleep(0.5)
+                continue
+
         try:
-            response = requests.get(url, timeout=60,
-                                    headers={"User-Agent": "phd_agent/1.0"},
-                                    allow_redirects=True)
+            response = requests.get(
+                url, timeout=60,
+                headers={"User-Agent": "Mozilla/5.0 (compatible; phd_agent/1.0)"},
+                allow_redirects=True,
+            )
 
             if response.status_code == 200 and response.content[:4] == b"%PDF":
                 with open(pdf_path, "wb") as f:
                     f.write(response.content)
                 size_kb = len(response.content) // 1024
-                print(f"[{i}/{total}] ✅ Downloaded ({size_kb} KB) — {bibcode} [{source_label}]")
+                print(f"[{i}/{total}] ✅ {size_kb} KB — {bibcode} [{source_label}]")
                 results["downloaded"].append(bibcode)
-                results["pdf_files"][bibcode] = pdf_path   # full path
+                results["pdf_files"][bibcode] = pdf_path
             else:
-                print(f"[{i}/{total}] ❌ Not a PDF (status {response.status_code}) — {bibcode} [{source_label}]")
+                print(f"[{i}/{total}] ❌ Not a PDF (HTTP {response.status_code}) — {bibcode} [{source_label}]")
                 results["failed"].append(bibcode)
 
         except requests.exceptions.RequestException as e:
@@ -1883,10 +1994,12 @@ def download_pdfs(
     print("=" * 50)
     print("📊 DOWNLOAD SUMMARY")
     print("=" * 50)
-    print(f"  ✅ Downloaded  : {len(results['downloaded'])}")
-    print(f"  ⏭️  Skipped     : {len(results['skipped'])}")
-    print(f"  ⚠️  No source  : {len(results['no_source'])}")
-    print(f"  ❌ Failed      : {len(results['failed'])}")
+    print(f"  ✅ Downloaded    : {len(results['downloaded'])}")
+    print(f"  ⏭️  Skipped       : {len(results['skipped'])}")
+    print(f"  🤖 Bot-protected : {len(results['bot_protected'])}  (IOPScience/Radware)")
+    print(f"  🔒 Paywalled     : {len(results['paywalled'])}  (MNRAS/NewA/etc.)")
+    print(f"  ⚠️  No source     : {len(results['no_source'])}")
+    print(f"  ❌ Failed        : {len(results['failed'])}")
     print("=" * 50)
 
     return results
