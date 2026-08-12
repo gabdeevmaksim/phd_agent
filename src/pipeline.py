@@ -78,23 +78,24 @@ class ObjectRow:
         """Flatten to a single dict with WUMaCat column names.
 
         Primary key: (Name, bibcode).
-        Only values and uncertainties are written to the CSV.
-        Source provenance is stored in the per-paper JSON file.
+        Each numerical param gets three columns: value, uncertainty, and source.
         """
         row = {
             "bibcode":    self.bibcode,
             "Name":       self.object_name,
             "n_mentions": self.n_mentions,
         }
-        # Numerical params — value + uncertainty only
+        # Numerical params — value, uncertainty, and source provenance
         for pname in PARAM_SPECS:
             pm = self.params.get(pname)
             if pm is None or pm.is_missing:
-                row[pname]          = float("nan")
-                row[f"{pname}_unc"] = float("nan")
+                row[pname]            = float("nan")
+                row[f"{pname}_unc"]   = float("nan")
+                row[f"{pname}_src"]   = ""
             else:
-                row[pname]          = pm.value
-                row[f"{pname}_unc"] = pm.uncertainty if pm.uncertainty is not None else float("nan")
+                row[pname]            = pm.value
+                row[f"{pname}_unc"]   = pm.uncertainty if pm.uncertainty is not None else float("nan")
+                row[f"{pname}_src"]   = pm.source if pm.source is not None else ""
         # Categorical params — value only
         for cname in ("Type", "ET", "Solver", "Spots"):
             cm = self.cats.get(cname)

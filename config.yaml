@@ -12,6 +12,7 @@ paths:
   extracted_json_dir: data/extracted
   search_download_table: data/search_download_table.csv
   similarity_download_table: data/similarity_download_table.csv
+  papers_table: data/papers_table.csv
 
 extraction:
   similarity_score_threshold: 100   # min ADS similarity score
